@@ -2,35 +2,52 @@ import os
 import hydra
 from omegaconf import DictConfig
 from transformers import AutoModel, CLIPVisionModel
-from feature_extractor import FeatureExtractor
-from config import Config
+from feature_extractor import FeatureExtractor, DatasetLoader, DatasetConfig
+from rich.console import Console
+
+console = Console()
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
-    config = Config(**cfg)
-    os.makedirs(config.data.cache_dir, exist_ok=True)
-    
-    print("加载预训练模型...")
-    if config.model.name.lower() == 'clip':
-        model = CLIPVisionModel.from_pretrained(config.model.pretrained)
-    else:  # DINO
-        model = AutoModel.from_pretrained(config.model.pretrained)
-    
-    extractor = FeatureExtractor(
-        config.model.name,
-        model,
-        device=config.extractor.device,
-        batch_size=config.extractor.batch_size
+    """主函数"""
+    # 创建数据集配置
+    dataset_config = DatasetConfig(
+        data_path=cfg.data.data_path,
+        batch_size=cfg.extractor.batch_size,
+        num_workers=cfg.extractor.num_workers,
+        max_samples=cfg.extractor.get('max_samples', None)
     )
     
-    for split in ['train', 'val']:
-        print(f"\n处理 {config.model.name} {split} 集...")
-        loader, classes = extractor.prepare_dataset(config.data.data_path, split)
+    # 加载模型
+    if cfg.model.name.lower() == "clip":
+        model = CLIPVisionModel.from_pretrained(cfg.model.pretrained)
+    else:
+        model = AutoModel.from_pretrained(cfg.model.pretrained)
+    
+    # 创建数据集加载器
+    dataset_loader = DatasetLoader(dataset_config)
+    
+    # 创建特征提取器
+    device = cfg.extractor.device
+    extractor = FeatureExtractor(model, device)
+    
+    # 处理训练集和验证集
+    for split in ["train", "val"]:
+        # 加载数据集
+        data_loader, class_to_idx = dataset_loader.load_dataset(split)
         
-        save_path = os.path.join(config.data.cache_dir, 
-                                f'{config.model.name.lower()}_{split}_features.h5')
-        extractor.extract_features(loader, save_path)
-        print(f"特征已保存到 {save_path}")
+        # 构建输出路径
+        output_path = os.path.join(
+            cfg.data.cache_dir,
+            f"{cfg.model.name.lower()}_{split}_features.h5"
+        )
+        
+        # 提取特征
+        extractor.extract_features(
+            data_loader=data_loader,
+            output_path=output_path,
+            class_to_idx=class_to_idx
+        )
 
 if __name__ == "__main__":
     main()

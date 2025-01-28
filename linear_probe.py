@@ -9,12 +9,12 @@ def main(cfg: DictConfig):
     
     # 构建特征路径
     train_features = os.path.join(
-        cfg.data.data_path,
-        f"{model_name}_train_features.h5"
+        cfg.data.cache_dir,
+        f"{model_name.lower()}_train_features.h5"
     )
     val_features = os.path.join(
-        cfg.data.data_path,
-        f"{model_name}_val_features.h5"
+        cfg.data.cache_dir,
+        f"{model_name.lower()}_val_features.h5"
     )
     
     # 训练和评估

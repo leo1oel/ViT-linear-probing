@@ -4,19 +4,15 @@ import matplotlib.pyplot as plt
 
 class LinearProbe(nn.Module):
     """Improved linear probe with better initialization and normalization"""
-    def __init__(self, input_dim: int, num_classes: int, normalize_weights: bool = True):
+    def __init__(self, input_dim: int, num_classes: int):
         super().__init__()
         self.linear = nn.Linear(input_dim, num_classes)
-        self.normalize_weights = normalize_weights
         
         # Improved initialization using Kaiming initialization
         nn.init.kaiming_normal_(self.linear.weight, mode='fan_out')
         nn.init.constant_(self.linear.bias, 0)
         
     def forward(self, x):
-        if self.normalize_weights:
-            w = self.linear.weight
-            self.linear.weight = nn.Parameter(nn.functional.normalize(w, dim=1))
         return self.linear(x)
 
 class GradientTracker:

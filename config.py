@@ -15,7 +15,7 @@ class ExtractorConfig:
 
 @dataclass
 class WandbConfig:
-    project: str = "clip-dino-linear-probe"
+    project: str = "linear-probe"
     key: Optional[str] = None
 
 @dataclass

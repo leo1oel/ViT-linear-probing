@@ -7,14 +7,8 @@ console = Console()
 
 class FeatureDataset(Dataset):
     """Enhanced dataset class with feature normalization and statistics tracking"""
-    def __init__(self, features: np.ndarray, labels: np.ndarray, normalize: bool = True):
+    def __init__(self, features: np.ndarray, labels: np.ndarray, normalize: bool = True, is_train: bool = True):
         # Store original statistics for debugging
-        self.original_stats = {
-            "mean": features.mean(),
-            "std": features.std(),
-            "min": features.min(),
-            "max": features.max()
-        }
         
         if normalize:
             # Normalize features using robust statistics
@@ -25,16 +19,9 @@ class FeatureDataset(Dataset):
         self.features = torch.from_numpy(features).float()
         self.labels = torch.from_numpy(labels).long()
         
-        # Store normalized statistics
-        self.normalized_stats = {
-            "mean": self.features.mean().item(),
-            "std": self.features.std().item(),
-            "min": self.features.min().item(),
-            "max": self.features.max().item()
-        }
-        
         # Verify label distribution
         self.label_distribution = torch.bincount(self.labels)
+        self.is_train = is_train
         
     def __len__(self):
         return len(self.features)
@@ -44,15 +31,11 @@ class FeatureDataset(Dataset):
     
     def print_statistics(self):
         """Print comprehensive dataset statistics"""
-        console.print("\n[bold cyan]Dataset Statistics:[/bold cyan]")
-        console.print("\nOriginal Features:")
-        for k, v in self.original_stats.items():
-            console.print(f"{k}: {v:.4f}")
-        
-        console.print("\nNormalized Features:")
-        for k, v in self.normalized_stats.items():
-            console.print(f"{k}: {v:.4f}")
-        
+        prefix = "Training" if self.is_train else "Validation"
+        console.print(f"\n[cyan]{prefix} Dataset:[/cyan]")
+        console.print(f"Total samples: {len(self)}")
+        console.print(f"Number of features: {self.features.shape[1]}")
+        console.print(f"Label counts: {self.label_distribution.tolist()}")
         console.print(f"\nNumber of classes: {len(self.label_distribution)}")
         console.print(f"Samples per class min: {self.label_distribution.min().item()}")
         console.print(f"Samples per class max: {self.label_distribution.max().item()}")

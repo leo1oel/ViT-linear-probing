@@ -15,8 +15,8 @@ from datetime import datetime
 from typing import Optional, List, Tuple, Dict
 from data_utils import FeatureDataset
 from models import LinearProbe, GradientTracker
-import torch.nn.functional as F
 from sklearn.metrics import classification_report, balanced_accuracy_score
+from omegaconf import OmegaConf
 
 console = Console()
 
@@ -98,21 +98,24 @@ def find_best_hyperparams(
         
         for lr in learning_rates:
             for wd in weight_decays:
+                console.print(f"\n[yellow]Testing LR={lr:.1e}, WD={wd:.1e}[/yellow]")
                 model = LinearProbe(input_dim, num_classes).to(device)
                 optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
                 
-                # Quick training
+                # Quick training with progress tracking
                 for epoch in range(quick_epochs):
-                    train_epoch(model, train_loader, optimizer, None, device)
+                    train_acc = train_epoch(model, train_loader, optimizer, None, device)
+                    console.print(f"[dim]Quick Epoch {epoch + 1}/{quick_epochs}, Train Acc: {train_acc:.2f}%[/dim]")
                 
                 # Validation
-                val_acc, _ = evaluate_model(model, val_loader, device)
+                val_acc, metrics = evaluate_model(model, val_loader, device)
                 results_table.add_row(f"{lr:.1e}", f"{wd:.1e}", f"{val_acc:.2f}%")
                 
                 if val_acc > best_acc:
                     best_acc = val_acc
                     best_lr = lr
                     best_wd = wd
+                    console.print("[green]New best configuration![/green]")
                 
                 progress.update(search_task, advance=1)
     
@@ -206,13 +209,31 @@ def evaluate_model(
     accuracy = 100. * correct / total
     balanced_acc = 100. * balanced_accuracy_score(all_targets, all_preds)
     
-    # 详细的分类报告
-    report = classification_report(all_targets, all_preds, output_dict=True)
+    # 详细的分类报告，处理零除警告
+    report = classification_report(
+        all_targets, 
+        all_preds, 
+        output_dict=True,
+        zero_division=0 
+    )
+    
+    # 计算每个类的预测统计
+    unique_classes = np.unique(all_targets)
+    class_stats = {}
+    for cls in unique_classes:
+        mask = np.array(all_targets) == cls
+        pred_mask = np.array(all_preds) == cls
+        class_stats[int(cls)] = {
+            "total_samples": np.sum(mask),
+            "correct_predictions": np.sum(np.logical_and(mask, pred_mask)),
+            "predicted_as_this_class": np.sum(pred_mask)
+        }
     
     metrics = {
         "accuracy": accuracy,
         "balanced_accuracy": balanced_acc,
-        "report": report
+        "report": report,
+        "class_stats": class_stats
     }
     
     return accuracy, metrics
@@ -229,10 +250,13 @@ def train_and_evaluate(
     if config.probe.wandb.key:
         os.environ["WANDB_API_KEY"] = config.probe.wandb.key
     
-    run = wandb.init(
+    # 将 OmegaConf 配置转换为普通字典
+    wandb_config = OmegaConf.to_container(config, resolve=True)
+    
+    wandb.init(
         project=config.probe.wandb.project,
         name=f"{model_name}-linear-probe-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
-        config=config
+        config=wandb_config
     )
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -241,30 +265,19 @@ def train_and_evaluate(
     # Load and prepare data with diagnostics
     console.print(Panel("Loading and preparing data...", style="bold green"))
     
-    # 特征缓存路径
-    cache_dir = os.path.join(config.probe.save_dir, "feature_cache")
-    os.makedirs(cache_dir, exist_ok=True)
-    
-    def load_features(file_path: str, split: str) -> Tuple[np.ndarray, np.ndarray]:
-        cache_path = os.path.join(cache_dir, f"{model_name}_{split}_features.npz")
-        if config.probe.cache_features and os.path.exists(cache_path):
-            data = np.load(cache_path)
-            return data['features'], data['labels']
-        
+    def load_features(file_path: str, split: str) -> Tuple[np.ndarray, np.ndarray]:  
         with h5py.File(file_path, 'r') as f:
             features = f['last_hidden_cls'][:]
             labels = f['targets'][:]
-            
-        if config.probe.cache_features:
-            np.savez(cache_path, features=features, labels=labels)
+
         return features, labels
     
     train_features, train_labels = load_features(features_path, "train")
     val_features, val_labels = load_features(val_features_path, "val")
     
     # Create datasets with statistics tracking
-    train_dataset = FeatureDataset(train_features, train_labels, normalize=True)
-    val_dataset = FeatureDataset(val_features, val_labels, normalize=True)
+    train_dataset = FeatureDataset(train_features, train_labels, normalize=True, is_train=True)
+    val_dataset = FeatureDataset(val_features, val_labels, normalize=True, is_train=False)
     
     # Print dataset statistics
     console.print("\n[bold]Dataset Statistics:[/bold]")
