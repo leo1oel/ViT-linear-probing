@@ -93,8 +93,5 @@ python linear_probe.py model=dino
 要添加新的模型支持：
 
 1. 在 `conf/model/` 下添加新的模型配置
-2. 在 `models.py` 中实现相应的模型加载逻辑
+2. 在 `models.py` 中实现相应的模型加载逻辑，如果是 huggingface 模型并且用最后一层 cls token 作为特征表示，可以不用修改
 
-## License
-
-[选择合适的开源协议]
