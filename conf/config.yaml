@@ -1,0 +1,44 @@
+defaults:
+  - _self_
+  - model: clip
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+# 全局配置
+data:
+  data_path: /pasteur/u/yuhuiz/data/ImageNet/imagenet/
+  cache_dir: /pasteur2/u/yuhuiz/yiming/clip_vs_dino/cached_features
+
+# 特征提取配置
+extractor:
+  batch_size: 256
+  device: cuda
+  num_workers: 8
+
+# 线性探测配置
+probe:
+  # 基础训练参数
+  batch_size: 512
+  epochs: 100
+  save_dir: results
+  warmup_epochs: 10
+  cache_features: true
+  
+  # 超参数搜索配置
+  hyperparameter_search:
+    enabled: true
+    quick_epochs: 3  # 快速训练的轮数
+    learning_rates: [1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4, 1e-3]
+    weight_decays: [1e-6, 1e-5, 1e-4, 1e-3, 1e-2]
+  
+  # wandb 配置
+  wandb:
+    project: clip-dino-linear-probe
+    key: null  # 通过环境变量或命令行设置
+
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.override_dirname}
