@@ -1,13 +1,15 @@
 defaults:
   - _self_
   - model: clip
+  - dataset: imagenet
   - override hydra/hydra_logging: disabled
   - override hydra/job_logging: disabled
 
 # 全局配置
 data:
+  datasets_root: /path/to/your/datasets  # 所有数据集的根目录
   data_path: /pasteur/u/yuhuiz/data/ImageNet/imagenet/
-  cache_dir: /pasteur2/u/yuhuiz/yiming/clip_vs_dino/cached_features
+  cache_dir: ${hydra:runtime.cwd}/cached_features/${dataset.name}
 
 # 特征提取配置
 extractor:
@@ -21,7 +23,7 @@ probe:
   # 基础训练参数
   batch_size: 1024
   epochs: 50
-  save_dir: results
+  save_dir: ${hydra:runtime.cwd}/results/${dataset.name}
   warmup_epochs: 10
   cache_features: true
   # lr: 0.1
@@ -46,7 +48,7 @@ probe:
 
 hydra:
   run:
-    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: outputs/${dataset.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
   sweep:
-    dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: multirun/${dataset.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
     subdir: ${hydra.job.override_dirname}
