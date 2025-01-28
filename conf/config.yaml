@@ -34,6 +34,11 @@ probe:
     learning_rates: [1e-5, 1e-4, 1e-3, 1e-2]
     weight_decays: [0, 1e-6, 1e-3]
   
+  # Wandb配置
+  use_wandb: false  # 是否使用wandb进行实验追踪
+  wandb_project: "vision-model-evaluation"  # wandb项目名称
+  wandb_run_name: null  # 运行名称，如果为null则自动生成
+
   # wandb 配置
   wandb:
     project: clip-dino-linear-probe

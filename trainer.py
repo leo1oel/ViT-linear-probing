@@ -142,40 +142,52 @@ def train_epoch(
     scheduler: Optional[object],
     device: str,
     grad_tracker: Optional[GradientTracker] = None,
-) -> float:
+    use_wandb: bool = False,
+):
     model.train()
     total_loss = 0
     correct = 0
     total = 0
-    criterion = nn.CrossEntropyLoss()
     
     progress = create_progress_bar()
+    train_task = progress.add_task("[cyan]Training...", total=len(train_loader))
+    
     with progress:
-        train_task = progress.add_task("[cyan]Training...", total=len(train_loader))
-        
-        for batch_idx, (features, targets) in enumerate(train_loader):
-            features, targets = features.to(device), targets.to(device)
-            
+        for batch_idx, (data, target) in enumerate(train_loader):
+            data, target = data.to(device), target.to(device)
             optimizer.zero_grad()
-            outputs = model(features)
-            loss = criterion(outputs, targets)
+            output = model(data)
+            loss = nn.CrossEntropyLoss()(output, target)
             loss.backward()
             
             if grad_tracker is not None:
                 grad_tracker.update(model)
-                
+            
             optimizer.step()
             if scheduler is not None:
-                scheduler(batch_idx)
+                scheduler.step()
+            
+            # 计算准确率
+            pred = output.argmax(dim=1, keepdim=True)
+            correct += pred.eq(target.view_as(pred)).sum().item()
+            total += target.size(0)
             
             total_loss += loss.item()
-            _, predicted = outputs.max(1)
-            total += targets.size(0)
-            correct += predicted.eq(targets).sum().item()
+            
+            # 记录到wandb
+            if use_wandb:
+                wandb.log({
+                    "batch_loss": loss.item(),
+                    "batch_accuracy": pred.eq(target.view_as(pred)).sum().item() / target.size(0),
+                    "learning_rate": optimizer.param_groups[0]["lr"]
+                })
             
             progress.update(train_task, advance=1)
     
-    return 100. * correct / total
+    avg_loss = total_loss / len(train_loader)
+    accuracy = correct / total
+    
+    return avg_loss, accuracy
 
 def evaluate_model(
     model: nn.Module,
@@ -189,9 +201,9 @@ def evaluate_model(
     all_targets = []
     
     progress = create_progress_bar()
+    eval_task = progress.add_task("[cyan]Evaluating...", total=len(data_loader))
+    
     with progress:
-        eval_task = progress.add_task("[cyan]Evaluating...", total=len(data_loader))
-        
         with torch.no_grad():
             for features, targets in data_loader:
                 features, targets = features.to(device), targets.to(device)
@@ -243,8 +255,14 @@ def train_and_evaluate(
     features_path: str,
     val_features_path: str,
     config: dict,
-) -> None:
+):
     """Enhanced training and evaluation function with improved optimization and diagnostics"""
+    use_wandb = config.get("use_wandb", False)
+    
+    # 设置结果保存目录
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_dir = os.path.join("results", f"{model_name}_{timestamp}")
+    os.makedirs(save_dir, exist_ok=True)
     
     # Setup wandb
     if config.probe.wandb.key:
@@ -330,43 +348,70 @@ def train_and_evaluate(
     # Gradient tracking
     grad_tracker = GradientTracker()
     
-    # Training loop
-    best_acc = 0.0
-    layout = Layout()
-    layout.split_column(
-        Layout(name="header", size=3),
-        Layout(name="main", ratio=1),
-        Layout(name="footer", size=3)
-    )
+    # 训练循环
+    best_val_acc = 0
+    best_model_state = None
     
     for epoch in range(config.probe.epochs):
-        # Training
-        train_acc = train_epoch(model, train_loader, optimizer, scheduler, device, grad_tracker)
+        # 训练一个epoch
+        train_loss, train_acc = train_epoch(
+            model, train_loader, optimizer, scheduler, device, 
+            grad_tracker=grad_tracker if config.probe.track_gradients else None,
+            use_wandb=use_wandb
+        )
         
-        # Validation
-        val_acc, val_metrics = evaluate_model(model, val_loader, device)
+        # 验证
+        val_metrics = evaluate_model(model, val_loader, device)
         
-        # Log metrics
+        # 打印结果
         metrics = {
-            "epoch": epoch,
-            "train_acc": train_acc,
-            "val_acc": val_acc,
-            "val_balanced_acc": val_metrics['balanced_accuracy'],
-            "learning_rate": optimizer.param_groups[0]['lr']
+            "Epoch": epoch + 1,
+            "Train Loss": train_loss,
+            "Train Accuracy": train_acc,
+            **val_metrics
         }
-        wandb.log(metrics)
+        print_metrics_table(metrics, epoch + 1)
         
-        # 打印漂亮的指标表格
-        print_metrics_table(metrics, epoch)
+        # 记录到wandb
+        if use_wandb:
+            wandb.log({
+                "epoch": epoch + 1,
+                "train_loss": train_loss,
+                "train_accuracy": train_acc,
+                **{f"val_{k.lower()}": v for k, v in val_metrics.items()}
+            })
         
-        # Save best model
-        if val_acc > best_acc:
-            best_acc = val_acc
-            os.makedirs(config.probe.save_dir, exist_ok=True)
-            save_path = os.path.join(config.probe.save_dir, f"{model_name}_best_model.pth")
-            torch.save(model.state_dict(), save_path)
-            console.print(f"[bold green]Saved best model to {save_path}[/bold green]")
+        # 保存最佳模型
+        if val_metrics["accuracy"] > best_val_acc:
+            best_val_acc = val_metrics["accuracy"]
+            best_model_state = {
+                "epoch": epoch + 1,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "val_accuracy": best_val_acc,
+                "config": OmegaConf.to_container(config, resolve=True),
+                "metrics": metrics
+            }
     
-    # Plot and save gradient statistics
-    grad_tracker.plot_statistics(os.path.join(config.probe.save_dir, f"{model_name}_grad_stats.png"))
-    wandb.finish()
+    # 保存最佳模型和结果
+    model_save_path = os.path.join(save_dir, "best_model.pth")
+    torch.save(best_model_state, model_save_path)
+    
+    # 保存完整的评估结果
+    results = {
+        "model_name": model_name,
+        "best_epoch": best_model_state["epoch"],
+        "best_val_accuracy": best_val_acc,
+        "final_metrics": metrics,
+        "config": OmegaConf.to_container(config, resolve=True),
+        "timestamp": timestamp
+    }
+    
+    import json
+    results_path = os.path.join(save_dir, "results.json")
+    with open(results_path, "w") as f:
+        json.dump(results, f, indent=2)
+    
+    console.print(Panel(f"[green]Training completed! Results saved to: {save_dir}"))
+    
+    return results
