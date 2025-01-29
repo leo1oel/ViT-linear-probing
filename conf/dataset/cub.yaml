@@ -1,0 +1,4 @@
+name: cub
+num_classes: 200  # CUB-200-2011 has 200 bird species
+input_size: 224  # Standard input size for fine-grained classification
+data_path: /pasteur/u/yuhuiz/data/CUB

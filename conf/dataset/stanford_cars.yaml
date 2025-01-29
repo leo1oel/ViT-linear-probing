@@ -1,0 +1,4 @@
+name: stanford_cars
+num_classes: 196  # Stanford Cars dataset has 196 car categories
+input_size: 224  # Standard input size for fine-grained classification
+data_path: /pasteur/u/yuhuiz/data/StanfordCars

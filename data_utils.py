@@ -5,6 +5,9 @@ import numpy as np
 from rich.console import Console
 from torchvision import datasets, transforms
 from typing import Optional, Tuple, Dict
+import json
+import scipy.io as sio
+from PIL import Image
 
 console = Console()
 
@@ -64,11 +67,150 @@ class CIFAR100Dataset(ImageDataset):
             self.root, train=False, transform=self.transform, download=True
         )
 
+class StanfordCarsDataset(ImageDataset):
+    """Stanford Cars dataset handler"""
+    def _setup(self):
+        # 加载测试集标注
+        annos = sio.loadmat(os.path.join(self.root, 'cars_test_annos_withlabels.mat'))
+        test_annotations = annos['annotations'][0]
+        
+        class StanfordCarsSubset(datasets.VisionDataset):
+            def __init__(self, root, annotations, transform=None):
+                super().__init__(root, transform=transform)
+                self.annotations = annotations
+                
+            def __getitem__(self, idx):
+                anno = self.annotations[idx]
+                img_name = anno[-1][0]  # 文件名在最后一个位置
+                label = anno[-2][0][0] - 1  # 标签从1开始，需要减1
+                
+                img_path = os.path.join(self.root, img_name)
+                img = Image.open(img_path).convert('RGB')
+                
+                if self.transform:
+                    img = self.transform(img)
+                
+                return img, label
+                
+            def __len__(self):
+                return len(self.annotations)
+        
+        self.train_data = StanfordCarsSubset(
+            os.path.join(self.root, 'cars_train'),
+            test_annotations,  # 需要替换为训练集标注
+            transform=self.transform
+        )
+        
+        self.val_data = StanfordCarsSubset(
+            os.path.join(self.root, 'cars_test'),
+            test_annotations,
+            transform=self.transform
+        )
+
+class Flowers102Dataset(ImageDataset):
+    """Oxford 102 Flowers dataset handler"""
+    def _setup(self):
+        # 读取jsonl文件
+        train_data = []
+        val_data = []
+        
+        with open(os.path.join(self.root, 'flowers102.jsonl'), 'r') as f:
+            for line in f:
+                item = json.loads(line)
+                if item['split'] == 'train':
+                    train_data.append(item)
+                elif item['split'] in ['test', 'val']:
+                    val_data.append(item)
+        
+        class Flowers102Subset(datasets.VisionDataset):
+            def __init__(self, data_items, transform=None):
+                super().__init__(root='', transform=transform)
+                self.data_items = data_items
+                # 创建标签到索引的映射
+                self.label_to_idx = {item['label']: idx for idx, item in enumerate(sorted(set(x['label'] for x in data_items)))}
+                
+            def __getitem__(self, idx):
+                item = self.data_items[idx]
+                img_path = item['path']
+                label = self.label_to_idx[item['label']]
+                
+                img = Image.open(img_path).convert('RGB')
+                if self.transform:
+                    img = self.transform(img)
+                
+                return img, label
+                
+            def __len__(self):
+                return len(self.data_items)
+        
+        self.train_data = Flowers102Subset(train_data, transform=self.transform)
+        self.val_data = Flowers102Subset(val_data, transform=self.transform)
+
+class CUBDataset(ImageDataset):
+    """CUB-200-2011 dataset handler"""
+    def _setup(self):
+        dataset_path = os.path.join(self.root, 'CUB_200_2011')
+        
+        # 读取必要的文件
+        def read_list_file(filename):
+            with open(os.path.join(dataset_path, filename)) as f:
+                return [line.strip().split() for line in f]
+        
+        # 读取图像列表和标签
+        image_list = read_list_file('images.txt')
+        image_labels = read_list_file('image_class_labels.txt')
+        train_test_split = read_list_file('train_test_split.txt')
+        
+        # 创建映射
+        filename_to_label = {img[1]: int(label[1]) - 1 for img, label in zip(image_list, image_labels)}
+        filename_to_split = {img[1]: int(split[1]) for img, split in zip(image_list, train_test_split)}
+        
+        class CUBSubset(datasets.VisionDataset):
+            def __init__(self, root, filenames, filename_to_label, transform=None):
+                super().__init__(root, transform=transform)
+                self.filenames = filenames
+                self.filename_to_label = filename_to_label
+                
+            def __getitem__(self, idx):
+                img_name = self.filenames[idx]
+                img_path = os.path.join(self.root, 'images', img_name)
+                label = self.filename_to_label[img_name]
+                
+                img = Image.open(img_path).convert('RGB')
+                if self.transform:
+                    img = self.transform(img)
+                
+                return img, label
+                
+            def __len__(self):
+                return len(self.filenames)
+        
+        # 分割训练集和测试集
+        train_files = [f for f, is_train in filename_to_split.items() if is_train]
+        test_files = [f for f, is_train in filename_to_split.items() if not is_train]
+        
+        self.train_data = CUBSubset(
+            dataset_path,
+            train_files,
+            filename_to_label,
+            transform=self.transform
+        )
+        
+        self.val_data = CUBSubset(
+            dataset_path,
+            test_files,
+            filename_to_label,
+            transform=self.transform
+        )
+
 # 数据集注册表
 DATASET_REGISTRY: Dict[str, type] = {
     'imagenet': ImageNetDataset,
     'cifar10': CIFAR10Dataset,
     'cifar100': CIFAR100Dataset,
+    'cub': CUBDataset,
+    'flowers102': Flowers102Dataset,
+    'stanford_cars': StanfordCarsDataset,
 }
 
 def get_dataset(name: str, root: str, transform: Optional[transforms.Compose] = None) -> ImageDataset:

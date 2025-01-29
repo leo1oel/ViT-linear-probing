@@ -1,0 +1,4 @@
+name: flowers102
+num_classes: 102  # Oxford 102 Flower dataset has 102 categories
+input_size: 224  # Standard input size for fine-grained classification
+data_path: /pasteur/u/yuhuiz/data/Flowers102
