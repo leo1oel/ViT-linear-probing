@@ -4,17 +4,14 @@ from omegaconf import DictConfig
 import wandb
 from extract_features import extract_features
 from linear_probe import linear_probe
+import os
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig):
-    # Initialize wandb if enabled
-    if cfg.get("use_wandb", False):
-        wandb.init(
-            project=cfg.get("wandb_project", "vision-model-evaluation"),
-            name=cfg.get("wandb_run_name", None),
-            config=dict(cfg)
-        )
-    
+    if cfg.probe.wandb.use_wandb: 
+        os.environ["WANDB_API_KEY"] = cfg.probe.wandb.key
+        os.environ["WANDB_START_METHOD"] = "thread"
+
     # Extract features
     features_path = extract_features(cfg)
     
@@ -22,8 +19,7 @@ def main(cfg: DictConfig):
     metrics = linear_probe(cfg, features_path)
     
     # Log metrics to wandb if enabled
-    if cfg.get("use_wandb", False):
-        wandb.log(metrics)
+    if cfg.probe.wandb.use_wandb:  
         wandb.finish()
     
     return metrics

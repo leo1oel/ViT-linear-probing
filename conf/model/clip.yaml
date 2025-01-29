@@ -1,2 +1,2 @@
 name: CLIP
-pretrained: Leonardo6/clip-datacomp-12m-16
+pretrained: openai/clip-vit-base-patch16

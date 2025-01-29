@@ -1,4 +1,3 @@
 name: cifar10
-root: ${data.datasets_root}/cifar10  # 将在主配置中定义datasets_root
 num_classes: 10
 input_size: 32  # CIFAR-10的原始图像大小

@@ -7,16 +7,16 @@ defaults:
 
 # 全局配置
 data:
-  datasets_root: /path/to/your/datasets  # 所有数据集的根目录
-  data_path: /pasteur/u/yuhuiz/data/ImageNet/imagenet/
-  cache_dir: ${hydra:runtime.cwd}/cached_features/${dataset.name}
+  data_path: /pasteur/u/yuhuiz/data/ImageNet/imagenet
+  # cache_dir: ${hydra:runtime.cwd}/cached_features/${dataset.name}
+  cache_dir: /pasteur2/u/yuhuiz/yiming/clip_vs_dino/cached_features
 
 # 特征提取配置
 extractor:
   batch_size: 256
   device: cuda
   num_workers: 8
-  max_samples: 50  # 每个类别的最大样本数，null表示使用所有样本
+  max_samples: null  # 每个类别的最大样本数，null表示使用所有样本
 
 # 线性探测配置
 probe:
@@ -25,9 +25,7 @@ probe:
   epochs: 50
   save_dir: ${hydra:runtime.cwd}/results/${dataset.name}
   warmup_epochs: 10
-  cache_features: true
-  # lr: 0.1
-  # weight_decay: 1.0e-6
+  track_gradients: false  # 是否跟踪梯度统计
   
   # 超参数搜索配置
   hyperparameter_search:
@@ -35,14 +33,10 @@ probe:
     quick_epochs: 3  # 快速训练的轮数
     learning_rates: [1e-5, 1e-4, 1e-3, 1e-2]
     weight_decays: [0, 1e-6, 1e-3]
-  
-  # Wandb配置
-  use_wandb: false  # 是否使用wandb进行实验追踪
-  wandb_project: "vision-model-evaluation"  # wandb项目名称
-  wandb_run_name: null  # 运行名称，如果为null则自动生成
 
   # wandb 配置
   wandb:
+    use_wandb: true  # 是否使用wandb进行实验追踪
     project: clip-dino-linear-probe
     key: f986124e83c452a464d737564954ac48e74264c0  # 通过环境变量或命令行设置
 

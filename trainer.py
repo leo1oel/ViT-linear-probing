@@ -10,7 +10,6 @@ from rich.console import Console
 from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 from rich.table import Table
 from rich.panel import Panel
-from rich.layout import Layout
 from datetime import datetime
 from typing import Optional, List, Tuple, Dict
 from data_utils import FeatureDataset
@@ -104,11 +103,12 @@ def find_best_hyperparams(
                 
                 # Quick training with progress tracking
                 for epoch in range(quick_epochs):
-                    train_acc = train_epoch(model, train_loader, optimizer, None, device)
-                    console.print(f"[dim]Quick Epoch {epoch + 1}/{quick_epochs}, Train Acc: {train_acc:.2f}%[/dim]")
+                    train_loss, train_acc = train_epoch(model, train_loader, optimizer, None, device, epoch=epoch, use_wandb=False)
+                    console.print(f"[dim]Quick Epoch {epoch + 1}/{quick_epochs}, Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%[/dim]")
                 
                 # Validation
-                val_acc, metrics = evaluate_model(model, val_loader, device)
+                val_metrics = evaluate_model(model, val_loader, device)
+                val_acc = val_metrics["Accuracy"]
                 results_table.add_row(f"{lr:.1e}", f"{wd:.1e}", f"{val_acc:.2f}%")
                 
                 if val_acc > best_acc:
@@ -119,19 +119,9 @@ def find_best_hyperparams(
                 
                 progress.update(search_task, advance=1)
     
-    # 显示结果表格
-    console.print("\n")
+    # 打印结果表格
     console.print(results_table)
-    
-    # 显示最佳结果
-    console.print(Panel(
-        f"[bold green]Best Configuration:[/bold green]\n"
-        f"Learning Rate: {best_lr:.1e}\n"
-        f"Weight Decay: {best_wd:.1e}\n"
-        f"Validation Accuracy: {best_acc:.2f}%",
-        title="Search Results",
-        border_style="green"
-    ))
+    console.print(f"\n[bold green]Best configuration: LR={best_lr:.1e}, WD={best_wd:.1e}, Val Acc={best_acc:.2f}%[/bold green]")
     
     return best_lr, best_wd
 
@@ -141,6 +131,7 @@ def train_epoch(
     optimizer: optim.Optimizer,
     scheduler: Optional[object],
     device: str,
+    epoch: int,
     grad_tracker: Optional[GradientTracker] = None,
     use_wandb: bool = False,
 ):
@@ -148,6 +139,7 @@ def train_epoch(
     total_loss = 0
     correct = 0
     total = 0
+    global_step = epoch * len(train_loader)
     
     progress = create_progress_bar()
     train_task = progress.add_task("[cyan]Training...", total=len(train_loader))
@@ -165,7 +157,11 @@ def train_epoch(
             
             optimizer.step()
             if scheduler is not None:
-                scheduler.step()
+                if isinstance(scheduler, torch.optim.lr_scheduler._LRScheduler):
+                    if batch_idx == 0:  # 对于epoch-based的scheduler
+                        scheduler.step()
+                else:  # 对于cosine_lr这样的自定义scheduler
+                    scheduler(batch_idx)
             
             # 计算准确率
             pred = output.argmax(dim=1, keepdim=True)
@@ -176,16 +172,17 @@ def train_epoch(
             
             # 记录到wandb
             if use_wandb:
+                current_step = global_step + batch_idx
                 wandb.log({
-                    "batch_loss": loss.item(),
-                    "batch_accuracy": pred.eq(target.view_as(pred)).sum().item() / target.size(0),
-                    "learning_rate": optimizer.param_groups[0]["lr"]
-                })
+                    "training/batch_loss": loss.item(),
+                    "training/batch_accuracy": 100.0 * pred.eq(target.view_as(pred)).sum().item() / target.size(0),
+                    "training/learning_rate": optimizer.param_groups[0]["lr"]
+                }, step=current_step)
             
             progress.update(train_task, advance=1)
     
     avg_loss = total_loss / len(train_loader)
-    accuracy = correct / total
+    accuracy = 100.0 * correct / total  # 修复：乘以100使其与验证集准确率保持一致
     
     return avg_loss, accuracy
 
@@ -193,10 +190,9 @@ def evaluate_model(
     model: nn.Module,
     data_loader: DataLoader,
     device: str,
-) -> Tuple[float, dict]:
+) -> Dict[str, float]:
+    """Evaluate model on the given data loader"""
     model.eval()
-    correct = 0
-    total = 0
     all_preds = []
     all_targets = []
     
@@ -209,46 +205,34 @@ def evaluate_model(
                 features, targets = features.to(device), targets.to(device)
                 outputs = model(features)
                 _, predicted = outputs.max(1)
-                
-                total += targets.size(0)
-                correct += predicted.eq(targets).sum().item()
-                
                 all_preds.extend(predicted.cpu().numpy())
                 all_targets.extend(targets.cpu().numpy())
-                
                 progress.update(eval_task, advance=1)
     
-    accuracy = 100. * correct / total
-    balanced_acc = 100. * balanced_accuracy_score(all_targets, all_preds)
+    # Convert to numpy arrays for sklearn metrics
+    all_preds = np.array(all_preds)
+    all_targets = np.array(all_targets)
     
-    # 详细的分类报告，处理零除警告
+    # Calculate metrics
+    accuracy = (all_preds == all_targets).mean() * 100
+    balanced_accuracy = balanced_accuracy_score(all_targets, all_preds) * 100
+    
+    # Get detailed classification report
     report = classification_report(
-        all_targets, 
-        all_preds, 
+        all_targets,
+        all_preds,
         output_dict=True,
-        zero_division=0 
+        zero_division=0
     )
     
-    # 计算每个类的预测统计
-    unique_classes = np.unique(all_targets)
-    class_stats = {}
-    for cls in unique_classes:
-        mask = np.array(all_targets) == cls
-        pred_mask = np.array(all_preds) == cls
-        class_stats[int(cls)] = {
-            "total_samples": np.sum(mask),
-            "correct_predictions": np.sum(np.logical_and(mask, pred_mask)),
-            "predicted_as_this_class": np.sum(pred_mask)
-        }
-    
     metrics = {
-        "accuracy": accuracy,
-        "balanced_accuracy": balanced_acc,
-        "report": report,
-        "class_stats": class_stats
+        "Accuracy": accuracy,
+        "Balanced_Accuracy": balanced_accuracy,
+        "Macro_F1": report["macro avg"]["f1-score"] * 100,
+        "Weighted_F1": report["weighted avg"]["f1-score"] * 100
     }
     
-    return accuracy, metrics
+    return metrics
 
 def train_and_evaluate(
     model_name: str,
@@ -257,7 +241,7 @@ def train_and_evaluate(
     config: dict,
 ):
     """Enhanced training and evaluation function with improved optimization and diagnostics"""
-    use_wandb = config.get("use_wandb", False)
+    use_wandb = config.probe.wandb.use_wandb
     
     # 设置结果保存目录
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -271,11 +255,19 @@ def train_and_evaluate(
     # 将 OmegaConf 配置转换为普通字典
     wandb_config = OmegaConf.to_container(config, resolve=True)
     
-    wandb.init(
-        project=config.probe.wandb.project,
-        name=f"{model_name}-linear-probe-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
-        config=wandb_config
-    )
+    if use_wandb:
+        wandb.init(
+            project=config.probe.wandb.project,
+            name=f"{model_name}-linear-probe-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+            config=wandb_config,
+            settings=wandb.Settings(start_method="thread")
+        )
+        
+        # 定义指标
+        wandb.define_metric("training/batch_*", step_metric="global_step")  # batch 级别使用 global_step
+        wandb.define_metric("training/epoch_*", step_metric="epoch")        # epoch 级别使用 epoch
+        wandb.define_metric("validation/*", step_metric="epoch")           # 验证指标使用 epoch
+
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     console.print(Panel(f"Using device: {device}", style="bold blue"))
@@ -355,7 +347,7 @@ def train_and_evaluate(
     for epoch in range(config.probe.epochs):
         # 训练一个epoch
         train_loss, train_acc = train_epoch(
-            model, train_loader, optimizer, scheduler, device, 
+            model, train_loader, optimizer, scheduler, device, epoch=epoch,
             grad_tracker=grad_tracker if config.probe.track_gradients else None,
             use_wandb=use_wandb
         )
@@ -375,15 +367,18 @@ def train_and_evaluate(
         # 记录到wandb
         if use_wandb:
             wandb.log({
-                "epoch": epoch + 1,
-                "train_loss": train_loss,
-                "train_accuracy": train_acc,
-                **{f"val_{k.lower()}": v for k, v in val_metrics.items()}
-            })
+                "epoch": epoch,
+                "training/epoch_loss": train_loss,
+                "training/epoch_accuracy": train_acc,
+                "validation/accuracy": val_metrics["Accuracy"],
+                "validation/balanced_accuracy": val_metrics["Balanced_Accuracy"],
+                "validation/macro_f1": val_metrics["Macro_F1"],
+                "validation/weighted_f1": val_metrics["Weighted_F1"]
+            }, step=epoch)
         
         # 保存最佳模型
-        if val_metrics["accuracy"] > best_val_acc:
-            best_val_acc = val_metrics["accuracy"]
+        if val_metrics["Accuracy"] > best_val_acc:
+            best_val_acc = val_metrics["Accuracy"]
             best_model_state = {
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),

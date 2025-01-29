@@ -8,6 +8,8 @@ wheels/
 outputs/
 results/
 wandb/
+multirun/
+cached_features/
 
 # Virtual environments
 .venv

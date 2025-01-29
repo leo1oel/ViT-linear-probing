@@ -4,12 +4,19 @@ from omegaconf import DictConfig
 from transformers import AutoModel, CLIPVisionModel
 from feature_extractor import FeatureExtractor, DatasetLoader, DatasetConfig
 from rich.console import Console
+from typing import Dict
 
 console = Console()
 
-@hydra.main(version_base=None, config_path="conf", config_name="config")
-def main(cfg: DictConfig) -> None:
-    """主函数"""
+def extract_features(cfg: DictConfig) -> Dict[str, str]:
+    """提取特征的主函数
+    
+    Args:
+        cfg: 配置对象
+        
+    Returns:
+        Dict[str, str]: 包含训练集和验证集特征路径的字典
+    """
     # 创建数据集配置
     dataset_config = DatasetConfig(
         data_path=cfg.data.data_path,
@@ -31,6 +38,8 @@ def main(cfg: DictConfig) -> None:
     device = cfg.extractor.device
     extractor = FeatureExtractor(model, device)
     
+    feature_paths = {}
+    
     # 处理训练集和验证集
     for split in ["train", "val"]:
         # 加载数据集
@@ -48,6 +57,15 @@ def main(cfg: DictConfig) -> None:
             output_path=output_path,
             class_to_idx=class_to_idx
         )
+        
+        feature_paths[f"{split}_features"] = output_path
+    
+    return feature_paths
+
+@hydra.main(version_base=None, config_path="conf", config_name="config")
+def main(cfg: DictConfig) -> None:
+    """主函数"""
+    extract_features(cfg)
 
 if __name__ == "__main__":
     main()
