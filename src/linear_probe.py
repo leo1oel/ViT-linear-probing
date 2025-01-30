@@ -5,18 +5,18 @@ from typing import Dict
 from trainer import train_and_evaluate
 
 def linear_probe(cfg: DictConfig, feature_paths: Dict[str, str]) -> Dict:
-    """线性探测训练的主函数
+    """Main function for linear probing training
     
     Args:
-        cfg: 配置对象
-        feature_paths: 包含训练集和验证集特征路径的字典
+        cfg: Configuration object
+        feature_paths: Dictionary containing paths to train and validation features
         
     Returns:
-        Dict: 训练结果和评估指标
+        Dict: Training results and evaluation metrics
     """
     model_name = cfg.model.name
     
-    # 训练和评估
+    # Train and evaluate
     metrics = train_and_evaluate(
         model_name=model_name,
         features_path=feature_paths["train_features"],
@@ -31,7 +31,7 @@ def main(cfg: DictConfig):
     """Main function for linear probe training"""
     model_name = cfg.model.name
     
-    # 构建特征路径
+    # Build feature paths
     feature_paths = {
         "train_features": os.path.join(
             cfg.data.cache_dir,
@@ -43,7 +43,7 @@ def main(cfg: DictConfig):
         )
     }
     
-    # 运行线性探测
+    # Run linear probing
     linear_probe(cfg, feature_paths)
 
 if __name__ == "__main__":

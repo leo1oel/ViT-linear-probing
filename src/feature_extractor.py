@@ -16,16 +16,16 @@ console = Console()
 
 @dataclass
 class DatasetConfig:
-    """数据集配置"""
+    """Dataset configuration"""
     dataset_name: str
     data_path: str
     batch_size: int = 256
     num_workers: int = 8
     image_size: int = 224
-    max_samples: Optional[int] = None  # 每个类别的最大样本数，None表示使用所有样本
+    max_samples: Optional[int] = None  # Maximum samples per class, None means use all samples
 
 class ImageFolderWithPaths(datasets.ImageFolder):
-    """扩展的 ImageFolder，返回图片路径"""
+    """Extended ImageFolder that returns image paths"""
     def __init__(self, root, transform):
         super().__init__(root, transform)
         self.imgs = self.samples
@@ -41,7 +41,7 @@ class ImageFolderWithPaths(datasets.ImageFolder):
         return sample, target, path
 
 def create_progress_bar() -> Progress:
-    """创建统一的进度条样式"""
+    """Create a unified progress bar style"""
     return Progress(
         TextColumn("[bold blue]{task.description}"),
         BarColumn(complete_style="green", finished_style="green"),
@@ -51,7 +51,7 @@ def create_progress_bar() -> Progress:
     )
 
 class DatasetLoader:
-    """数据集加载器"""
+    """Dataset loader class"""
     def __init__(self, config: DatasetConfig):
         self.config = config
         self.transform = transforms.Compose([
@@ -63,17 +63,26 @@ class DatasetLoader:
         ])
 
     def load_dataset(self, split: str) -> Tuple[DataLoader, Dict[int, str]]:
-        """加载数据集并返回数据加载器和类别映射"""
-        # 创建数据集
+        """Load dataset and return dataloader with class mapping
+        
+        Args:
+            split: Dataset split ('train' or 'val')
+            
+        Returns:
+            Tuple containing:
+                - DataLoader: The dataset loader
+                - Dict[int, str]: Mapping from class indices to class names
+        """
+        # Create dataset
         dataset = get_dataset(self.config.dataset_name, self.config.data_path, self.transform)
         if split == 'train':
             full_dataset = dataset.train_data
         else:
             full_dataset = dataset.val_data
 
-        # 如果指定了最大样本数，对每个类别进行采样
+        # Sample from each class if max_samples is specified
         if self.config.max_samples is not None:
-            # 按类别组织索引
+            # Organize indices by class
             indices_by_class = {}
             for idx in range(len(full_dataset)):
                 _, label, _ = full_dataset[idx]
@@ -81,17 +90,17 @@ class DatasetLoader:
                     indices_by_class[label] = []
                 indices_by_class[label].append(idx)
             
-            # 对每个类别进行采样
+            # Sample from each class
             sampled_indices = []
             for indices in indices_by_class.values():
                 if len(indices) > self.config.max_samples:
                     indices = np.random.choice(indices, self.config.max_samples, replace=False)
                 sampled_indices.extend(indices)
             
-            # 创建子集
+            # Create subset
             full_dataset = Subset(full_dataset, sampled_indices)
 
-        # 创建数据加载器
+        # Create data loader
         data_loader = DataLoader(
             full_dataset,
             batch_size=self.config.batch_size,
@@ -100,16 +109,16 @@ class DatasetLoader:
             pin_memory=True
         )
 
-        # 获取类别映射
+        # Get class mapping
         class_to_idx = getattr(full_dataset, 'class_to_idx', None)
         if class_to_idx is None and hasattr(full_dataset, 'dataset'):
-            # 处理Subset情况
+            # Handle Subset case
             class_to_idx = full_dataset.dataset.class_to_idx
 
         return data_loader, class_to_idx
 
 class FeatureExtractor:
-    """特征提取器"""
+    """Feature extractor class"""
     def __init__(self, model: nn.Module, device: str = "cuda"):
         self.model = model.to(device)
         self.model.eval()
@@ -118,12 +127,19 @@ class FeatureExtractor:
                           style="bold blue"))
     
     def _get_features(self, images: torch.Tensor) -> torch.Tensor:
-        """根据模型类型获取特征"""
+        """Extract features based on model type
+        
+        Args:
+            images: Input tensor of images
+            
+        Returns:
+            torch.Tensor: Extracted features
+        """
         outputs = self.model(images, output_hidden_states=True)
         if hasattr(outputs, 'last_hidden_state'):
-            features = outputs.last_hidden_state[:, 0]  # 取 CLS token
+            features = outputs.last_hidden_state[:, 0]  # Take CLS token
         else:
-            # 如果没有 last_hidden_state，使用最后一层隐藏状态
+            # If no last_hidden_state, use the last layer hidden state
             features = outputs.hidden_states[-1][:, 0]
         
         return features
@@ -134,15 +150,21 @@ class FeatureExtractor:
         output_path: str,
         class_to_idx: Dict[str, int]
     ) -> None:
-        """提取特征并保存到文件"""
-        # 确保输出目录存在
+        """Extract features and save to file
+        
+        Args:
+            data_loader: DataLoader containing the dataset
+            output_path: Path to save the extracted features
+            class_to_idx: Mapping from class names to indices
+        """
+        # Ensure output directory exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
         all_features = []
         all_labels = []
         all_paths = []
 
-        # 创建进度条
+        # Create progress bar
         progress = create_progress_bar()
         with progress:
             extract_task = progress.add_task(
@@ -165,22 +187,22 @@ class FeatureExtractor:
                     
                     progress.update(extract_task, advance=1)
 
-        # 合并所有特征
+        # Concatenate all features
         features = np.concatenate(all_features)
         labels = np.concatenate(all_labels)
 
-        # 保存特征
+        # Save features
         console.print(Panel("Saving features to file...", style="bold green"))
         with h5py.File(output_path, 'w') as f:
             f.create_dataset('last_hidden_cls', data=features)
             f.create_dataset('targets', data=labels)
-            # 保存图片路径和类别映射
+            # Save image paths and class mapping
             dt = h5py.special_dtype(vlen=str)
             f.create_dataset('paths', data=np.array(all_paths, dtype=object), dtype=dt)
             for class_name, idx in class_to_idx.items():
                 f.attrs[f'class_{idx}'] = class_name
 
-        # 打印特征统计信息
+        # Print feature statistics
         stats_table = Table(title="Feature Statistics")
         stats_table.add_column("Metric", style="cyan")
         stats_table.add_column("Value", justify="right", style="green")
@@ -191,6 +213,15 @@ class FeatureExtractor:
         console.print(stats_table)
 
 def get_dataset(dataset_name, data_path, transform):
-    """获取数据集实例"""
+    """Get dataset instance
+    
+    Args:
+        dataset_name: Name of the dataset
+        data_path: Path to dataset
+        transform: Transforms to apply to images
+        
+    Returns:
+        Dataset instance
+    """
     from data_utils import get_dataset as get_dataset_instance
     return get_dataset_instance(dataset_name, data_path, transform)

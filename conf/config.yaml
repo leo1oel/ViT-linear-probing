@@ -10,14 +10,14 @@ data:
   dataset_name: ${dataset.name}  # 从dataset配置中获取名称
   data_path: ${dataset.data_path}  # 从dataset配置中获取路径
   cache_dir: ${hydra:runtime.cwd}/cached_features/${dataset.name}
-  # cache_dir: /pasteur2/u/yuhuiz/yiming/clip_vs_dino/cached_features
 
 # 特征提取配置
 extractor:
   batch_size: 256
-  device: cuda
   num_workers: 8
+  device: cuda
   max_samples: null  # 每个类别的最大样本数，null表示使用所有样本
+  splits: ["train", "val"]  # 需要提取特征的数据集划分，可选 ["train"], ["val"], 或 ["train", "val"]
 
 # 线性探测配置
 probe:
@@ -26,7 +26,6 @@ probe:
   epochs: 50
   save_dir: ${hydra:runtime.cwd}/results/${dataset.name}
   warmup_epochs: 10
-  track_gradients: false  # 是否跟踪梯度统计
   
   # 超参数搜索配置
   hyperparameter_search:
@@ -34,12 +33,6 @@ probe:
     quick_epochs: 3  # 快速训练的轮数
     learning_rates: [1e-5, 1e-4, 1e-3, 1e-2]
     weight_decays: [0, 1e-6, 1e-3]
-
-  # wandb 配置
-  wandb:
-    use_wandb: false  # 是否使用wandb进行实验追踪
-    project: clip-dino-linear-probe
-    key: f986124e83c452a464d737564954ac48e74264c0  # 通过环境变量或命令行设置
 
 hydra:
   run:

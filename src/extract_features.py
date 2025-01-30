@@ -9,15 +9,19 @@ from typing import Dict
 console = Console()
 
 def extract_features(cfg: DictConfig) -> Dict[str, str]:
-    """提取特征的主函数
+    """Main function for feature extraction
     
     Args:
-        cfg: 配置对象
+        cfg: Configuration object containing:
+            - data: dataset configuration
+            - model: model configuration
+            - extractor: feature extraction configuration including:
+                - splits: list of splits to extract features from (e.g., ["train"], ["val"], or ["train", "val"])
         
     Returns:
-        Dict[str, str]: 包含训练集和验证集特征路径的字典
+        Dict[str, str]: Dictionary containing paths to extracted features for each requested split
     """
-    # 创建数据集配置
+    # Create dataset configuration
     dataset_config = DatasetConfig(
         dataset_name=cfg.data.dataset_name,
         data_path=cfg.data.data_path,
@@ -26,33 +30,36 @@ def extract_features(cfg: DictConfig) -> Dict[str, str]:
         max_samples=cfg.extractor.get('max_samples', None)
     )
     
-    # 加载模型
+    # Load model
     if cfg.model.name.lower() == "clip":
         model = CLIPVisionModel.from_pretrained(cfg.model.pretrained)
     else:
         model = AutoModel.from_pretrained(cfg.model.pretrained)
     
-    # 创建数据集加载器
+    # Create dataset loader
     dataset_loader = DatasetLoader(dataset_config)
     
-    # 创建特征提取器
+    # Create feature extractor
     device = cfg.extractor.device
     extractor = FeatureExtractor(model, device)
     
     feature_paths = {}
     
-    # 处理训练集和验证集
-    for split in ["train", "val"]:
-        # 加载数据集
+    # Get splits to process from config
+    splits = cfg.extractor.get('splits', ["train", "val"])
+    
+    # Process requested splits
+    for split in splits:
+        # Load dataset
         data_loader, class_to_idx = dataset_loader.load_dataset(split)
         
-        # 构建输出路径
+        # Build output path
         output_path = os.path.join(
             cfg.data.cache_dir,
             f"{cfg.model.name.lower()}_{split}_features.h5"
         )
         
-        # 提取特征
+        # Extract features
         extractor.extract_features(
             data_loader=data_loader,
             output_path=output_path,
@@ -65,7 +72,7 @@ def extract_features(cfg: DictConfig) -> Dict[str, str]:
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
-    """主函数"""
+    """Main entry point"""
     extract_features(cfg)
 
 if __name__ == "__main__":
