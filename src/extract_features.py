@@ -19,6 +19,7 @@ def extract_features(cfg: DictConfig) -> Dict[str, str]:
     """
     # 创建数据集配置
     dataset_config = DatasetConfig(
+        dataset_name=cfg.data.dataset_name,
         data_path=cfg.data.data_path,
         batch_size=cfg.extractor.batch_size,
         num_workers=cfg.extractor.num_workers,

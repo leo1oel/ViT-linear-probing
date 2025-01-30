@@ -1,3 +1,4 @@
 name: cifar10
+data_path: /pasteur/u/yuhuiz/data/CIFAR-10
 num_classes: 10
 input_size: 32  # CIFAR-10的原始图像大小

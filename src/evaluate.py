@@ -6,7 +6,9 @@ from extract_features import extract_features
 from linear_probe import linear_probe
 import os
 
-@hydra.main(version_base=None, config_path="conf", config_name="config")
+current_dir = os.path.dirname(os.path.abspath(__file__))
+config_path = os.path.join(os.path.dirname(current_dir), "conf")
+@hydra.main(version_base=None, config_path=config_path, config_name="config")
 def main(cfg: DictConfig):
     if cfg.probe.wandb.use_wandb: 
         os.environ["WANDB_API_KEY"] = cfg.probe.wandb.key

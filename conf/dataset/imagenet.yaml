@@ -1,5 +1,4 @@
 name: imagenet
-train_path: /pasteur/u/yuhuiz/data/ImageNet/imagenet/train
-val_path: /pasteur/u/yuhuiz/data/ImageNet/imagenet/val
+data_path: /pasteur/u/yuhuiz/data/ImageNet/imagenet
 num_classes: 1000
 input_size: 224

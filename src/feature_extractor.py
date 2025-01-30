@@ -17,6 +17,7 @@ console = Console()
 @dataclass
 class DatasetConfig:
     """数据集配置"""
+    dataset_name: str
     data_path: str
     batch_size: int = 256
     num_workers: int = 8
@@ -25,10 +26,19 @@ class DatasetConfig:
 
 class ImageFolderWithPaths(datasets.ImageFolder):
     """扩展的 ImageFolder，返回图片路径"""
+    def __init__(self, root, transform):
+        super().__init__(root, transform)
+        self.imgs = self.samples
+
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, int, str]:
-        img, label = super().__getitem__(index)
-        path = self.imgs[index][0]
-        return img, label, path
+        path, target = self.imgs[index]
+        sample = self.loader(path)
+        if self.transform is not None:
+            sample = self.transform(sample)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return sample, target, path
 
 def create_progress_bar() -> Progress:
     """创建统一的进度条样式"""
@@ -54,68 +64,49 @@ class DatasetLoader:
 
     def load_dataset(self, split: str) -> Tuple[DataLoader, Dict[int, str]]:
         """加载数据集并返回数据加载器和类别映射"""
-        # 构建数据集路径
-        dataset_path = os.path.join(self.config.data_path, split)
-        console.print(Panel(f"Loading {split} dataset from {dataset_path}", 
-                          style="bold cyan"))
-
-        # 创建完整数据集
-        full_dataset = ImageFolderWithPaths(
-            dataset_path,
-            transform=self.transform
-        )
+        # 创建数据集
+        dataset = get_dataset(self.config.dataset_name, self.config.data_path, self.transform)
+        if split == 'train':
+            full_dataset = dataset.train_data
+        else:
+            full_dataset = dataset.val_data
 
         # 如果指定了最大样本数，对每个类别进行采样
         if self.config.max_samples is not None:
             # 按类别组织索引
             indices_by_class = {}
-            for idx, (_, label) in enumerate(full_dataset.samples):
+            for idx in range(len(full_dataset)):
+                _, label, _ = full_dataset[idx]
                 if label not in indices_by_class:
                     indices_by_class[label] = []
                 indices_by_class[label].append(idx)
             
             # 对每个类别进行采样
-            selected_indices = []
-            for label_indices in indices_by_class.values():
-                if len(label_indices) > self.config.max_samples:
-                    # 随机采样指定数量的样本
-                    selected_indices.extend(
-                        np.random.choice(
-                            label_indices, 
-                            self.config.max_samples, 
-                            replace=False
-                        ).tolist()
-                    )
-                else:
-                    selected_indices.extend(label_indices)
+            sampled_indices = []
+            for indices in indices_by_class.values():
+                if len(indices) > self.config.max_samples:
+                    indices = np.random.choice(indices, self.config.max_samples, replace=False)
+                sampled_indices.extend(indices)
             
             # 创建子集
-            dataset = Subset(full_dataset, selected_indices)
-            console.print(f"[yellow]Sampled {len(selected_indices)} images from original {len(full_dataset)} images[/yellow]")
-        else:
-            dataset = full_dataset
+            full_dataset = Subset(full_dataset, sampled_indices)
 
         # 创建数据加载器
-        loader = DataLoader(
-            dataset,
+        data_loader = DataLoader(
+            full_dataset,
             batch_size=self.config.batch_size,
             shuffle=False,
             num_workers=self.config.num_workers,
             pin_memory=True
         )
 
-        # 打印数据集统计信息
-        stats_table = Table(title=f"{split.capitalize()} Dataset Statistics")
-        stats_table.add_column("Metric", style="cyan")
-        stats_table.add_column("Value", justify="right", style="green")
-        stats_table.add_row("Total Images", str(len(dataset)))
-        stats_table.add_row("Number of Classes", str(len(full_dataset.classes)))
-        if self.config.max_samples is not None:
-            stats_table.add_row("Max Samples per Class", str(self.config.max_samples))
-        stats_table.add_row("Batch Size", str(self.config.batch_size))
-        console.print(stats_table)
+        # 获取类别映射
+        class_to_idx = getattr(full_dataset, 'class_to_idx', None)
+        if class_to_idx is None and hasattr(full_dataset, 'dataset'):
+            # 处理Subset情况
+            class_to_idx = full_dataset.dataset.class_to_idx
 
-        return loader, full_dataset.class_to_idx
+        return data_loader, class_to_idx
 
 class FeatureExtractor:
     """特征提取器"""
@@ -198,3 +189,8 @@ class FeatureExtractor:
         stats_table.add_row("Feature Mean", f"{features.mean():.4f}")
         stats_table.add_row("Feature Std", f"{features.std():.4f}")
         console.print(stats_table)
+
+def get_dataset(dataset_name, data_path, transform):
+    """获取数据集实例"""
+    from data_utils import get_dataset as get_dataset_instance
+    return get_dataset_instance(dataset_name, data_path, transform)

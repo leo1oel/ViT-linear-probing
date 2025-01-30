@@ -8,6 +8,7 @@ from typing import Optional, Tuple, Dict
 import json
 import scipy.io as sio
 from PIL import Image
+from feature_extractor import ImageFolderWithPaths
 
 console = Console()
 
@@ -38,32 +39,53 @@ class ImageDataset:
 class ImageNetDataset(ImageDataset):
     """ImageNet dataset handler"""
     def _setup(self):
-        self.train_data = datasets.ImageFolder(
+        self.train_data = ImageFolderWithPaths(
             os.path.join(self.root, 'train'),
             transform=self.transform
         )
-        self.val_data = datasets.ImageFolder(
+        self.val_data = ImageFolderWithPaths(
             os.path.join(self.root, 'val'),
             transform=self.transform
         )
 
+class CIFAR10WithPaths(datasets.CIFAR10):
+    """扩展的 CIFAR10，返回图片的索引作为路径"""
+    def __init__(self, root, train=True, transform=None, download=False):
+        super().__init__(root, train=train, transform=transform, download=download)
+
+    def __getitem__(self, index):
+        img, target = super().__getitem__(index)
+        # 由于 CIFAR10 是内置数据集，没有实际的文件路径，我们使用索引作为标识
+        path = f"cifar10_{'train' if self.train else 'test'}_{index}"
+        return img, target, path
+
 class CIFAR10Dataset(ImageDataset):
     """CIFAR-10 dataset handler"""
     def _setup(self):
-        self.train_data = datasets.CIFAR10(
+        self.train_data = CIFAR10WithPaths(
             self.root, train=True, transform=self.transform, download=True
         )
-        self.val_data = datasets.CIFAR10(
+        self.val_data = CIFAR10WithPaths(
             self.root, train=False, transform=self.transform, download=True
         )
+
+class CIFAR100WithPaths(datasets.CIFAR100):
+    """扩展的 CIFAR100，返回图片的索引作为路径"""
+    def __init__(self, root, train=True, transform=None, download=False):
+        super().__init__(root, train=train, transform=transform, download=download)
+
+    def __getitem__(self, index):
+        img, target = super().__getitem__(index)
+        path = f"cifar100_{'train' if self.train else 'test'}_{index}"
+        return img, target, path
 
 class CIFAR100Dataset(ImageDataset):
     """CIFAR-100 dataset handler"""
     def _setup(self):
-        self.train_data = datasets.CIFAR100(
+        self.train_data = CIFAR100WithPaths(
             self.root, train=True, transform=self.transform, download=True
         )
-        self.val_data = datasets.CIFAR100(
+        self.val_data = CIFAR100WithPaths(
             self.root, train=False, transform=self.transform, download=True
         )
 
@@ -71,39 +93,45 @@ class StanfordCarsDataset(ImageDataset):
     """Stanford Cars dataset handler"""
     def _setup(self):
         # 加载测试集标注
-        annos = sio.loadmat(os.path.join(self.root, 'cars_test_annos_withlabels.mat'))
-        test_annotations = annos['annotations'][0]
+        test_annos = sio.loadmat(os.path.join(self.root, 'cars_test_annos_withlabels.mat'))
+        train_annos = sio.loadmat(os.path.join(self.root, 'devkit/cars_train_annos.mat'))
         
         class StanfordCarsSubset(datasets.VisionDataset):
-            def __init__(self, root, annotations, transform=None):
+            def __init__(self, root, annotations, split, transform=None):
                 super().__init__(root, transform=transform)
-                self.annotations = annotations
+                self.annotations = annotations['annotations'][0]  # 获取标注数组
+                self.split = split
+                self.classes = [str(i) for i in range(196)]  # 196个车型类别
+                self.class_to_idx = {cls: i for i, cls in enumerate(self.classes)}
                 
             def __getitem__(self, idx):
                 anno = self.annotations[idx]
                 img_name = anno[-1][0]  # 文件名在最后一个位置
                 label = anno[-2][0][0] - 1  # 标签从1开始，需要减1
                 
-                img_path = os.path.join(self.root, img_name)
+                # 根据split构建正确的图片路径
+                img_path = os.path.join(self.root, f'cars_{self.split}', img_name)
                 img = Image.open(img_path).convert('RGB')
                 
                 if self.transform:
                     img = self.transform(img)
                 
-                return img, label
+                return img, label, img_path
                 
             def __len__(self):
                 return len(self.annotations)
         
         self.train_data = StanfordCarsSubset(
-            os.path.join(self.root, 'cars_train'),
-            test_annotations,  # 需要替换为训练集标注
+            self.root,
+            train_annos,
+            'train',
             transform=self.transform
         )
         
         self.val_data = StanfordCarsSubset(
-            os.path.join(self.root, 'cars_test'),
-            test_annotations,
+            self.root,
+            test_annos,
+            'test',
             transform=self.transform
         )
 
@@ -114,7 +142,7 @@ class Flowers102Dataset(ImageDataset):
         train_data = []
         val_data = []
         
-        with open(os.path.join(self.root, 'flowers102.jsonl'), 'r') as f:
+        with open(os.path.join(self.root, 'flowers.jsonl'), 'r') as f:
             for line in f:
                 item = json.loads(line)
                 if item['split'] == 'train':
@@ -127,18 +155,21 @@ class Flowers102Dataset(ImageDataset):
                 super().__init__(root='', transform=transform)
                 self.data_items = data_items
                 # 创建标签到索引的映射
-                self.label_to_idx = {item['label']: idx for idx, item in enumerate(sorted(set(x['label'] for x in data_items)))}
+                unique_labels = sorted(set(x['label'] for x in data_items))
+                self.classes = unique_labels
+                self.class_to_idx = {label: idx for idx, label in enumerate(unique_labels)}
                 
             def __getitem__(self, idx):
                 item = self.data_items[idx]
-                img_path = item['path']
-                label = self.label_to_idx[item['label']]
+                img_path = item['image']
+                img_path = img_path.replace("./data", "/pasteur/u/yuhuiz/data")
+                label = self.class_to_idx[item['label']]
                 
                 img = Image.open(img_path).convert('RGB')
                 if self.transform:
                     img = self.transform(img)
                 
-                return img, label
+                return img, label, img_path
                 
             def __len__(self):
                 return len(self.data_items)
@@ -160,16 +191,20 @@ class CUBDataset(ImageDataset):
         image_list = read_list_file('images.txt')
         image_labels = read_list_file('image_class_labels.txt')
         train_test_split = read_list_file('train_test_split.txt')
+        classes_txt = read_list_file('classes.txt')
         
         # 创建映射
+        self.classes = [c[1].split('.')[1] for c in classes_txt]  # 移除序号并获取类名
         filename_to_label = {img[1]: int(label[1]) - 1 for img, label in zip(image_list, image_labels)}
         filename_to_split = {img[1]: int(split[1]) for img, split in zip(image_list, train_test_split)}
         
         class CUBSubset(datasets.VisionDataset):
-            def __init__(self, root, filenames, filename_to_label, transform=None):
+            def __init__(self, root, filenames, filename_to_label, classes, transform=None):
                 super().__init__(root, transform=transform)
                 self.filenames = filenames
                 self.filename_to_label = filename_to_label
+                self.classes = classes
+                self.class_to_idx = {cls: idx for idx, cls in enumerate(classes)}
                 
             def __getitem__(self, idx):
                 img_name = self.filenames[idx]
@@ -180,7 +215,7 @@ class CUBDataset(ImageDataset):
                 if self.transform:
                     img = self.transform(img)
                 
-                return img, label
+                return img, label, img_path
                 
             def __len__(self):
                 return len(self.filenames)
@@ -193,6 +228,7 @@ class CUBDataset(ImageDataset):
             dataset_path,
             train_files,
             filename_to_label,
+            self.classes,
             transform=self.transform
         )
         
@@ -200,12 +236,26 @@ class CUBDataset(ImageDataset):
             dataset_path,
             test_files,
             filename_to_label,
+            self.classes,
+            transform=self.transform
+        )
+
+class ImageNetV2Dataset(ImageDataset):
+    """ImageNetV2 dataset handler - validation only dataset"""
+    def _setup(self):
+        self.train_data = ImageFolderWithPaths(
+            self.root,
+            transform=self.transform
+        )  # ImageNetV2 only has validation set
+        self.val_data = ImageFolderWithPaths(
+            self.root,
             transform=self.transform
         )
 
 # 数据集注册表
 DATASET_REGISTRY: Dict[str, type] = {
     'imagenet': ImageNetDataset,
+    'imagenetv2': ImageNetV2Dataset,
     'cifar10': CIFAR10Dataset,
     'cifar100': CIFAR100Dataset,
     'cub': CUBDataset,

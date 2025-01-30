@@ -7,9 +7,10 @@ defaults:
 
 # 全局配置
 data:
-  data_path: /pasteur/u/yuhuiz/data/ImageNet/imagenet
-  # cache_dir: ${hydra:runtime.cwd}/cached_features/${dataset.name}
-  cache_dir: /pasteur2/u/yuhuiz/yiming/clip_vs_dino/cached_features
+  dataset_name: ${dataset.name}  # 从dataset配置中获取名称
+  data_path: ${dataset.data_path}  # 从dataset配置中获取路径
+  cache_dir: ${hydra:runtime.cwd}/cached_features/${dataset.name}
+  # cache_dir: /pasteur2/u/yuhuiz/yiming/clip_vs_dino/cached_features
 
 # 特征提取配置
 extractor:
@@ -36,7 +37,7 @@ probe:
 
   # wandb 配置
   wandb:
-    use_wandb: true  # 是否使用wandb进行实验追踪
+    use_wandb: false  # 是否使用wandb进行实验追踪
     project: clip-dino-linear-probe
     key: f986124e83c452a464d737564954ac48e74264c0  # 通过环境变量或命令行设置
 
