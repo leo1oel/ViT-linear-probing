@@ -5,7 +5,6 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import h5py
 import numpy as np
-import wandb
 from rich.console import Console
 from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 from rich.table import Table
@@ -13,9 +12,11 @@ from rich.panel import Panel
 from datetime import datetime
 from typing import Optional, List, Tuple, Dict
 from data_utils import FeatureDataset
-from models import LinearProbe, GradientTracker
+from models import LinearProbe 
 from sklearn.metrics import classification_report, balanced_accuracy_score
 from omegaconf import OmegaConf
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 console = Console()
 
@@ -103,7 +104,7 @@ def find_best_hyperparams(
                 
                 # Quick training with progress tracking
                 for epoch in range(quick_epochs):
-                    train_loss, train_acc = train_epoch(model, train_loader, optimizer, None, device, epoch=epoch, use_wandb=False)
+                    train_loss, train_acc = train_epoch(model, train_loader, optimizer, None, device, epoch=epoch)
                     console.print(f"[dim]Quick Epoch {epoch + 1}/{quick_epochs}, Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%[/dim]")
                 
                 # Validation
@@ -132,14 +133,11 @@ def train_epoch(
     scheduler: Optional[object],
     device: str,
     epoch: int,
-    grad_tracker: Optional[GradientTracker] = None,
-    use_wandb: bool = False,
 ):
     model.train()
     total_loss = 0
     correct = 0
     total = 0
-    global_step = epoch * len(train_loader)
     
     progress = create_progress_bar()
     train_task = progress.add_task("[cyan]Training...", total=len(train_loader))
@@ -151,9 +149,6 @@ def train_epoch(
             output = model(data)
             loss = nn.CrossEntropyLoss()(output, target)
             loss.backward()
-            
-            if grad_tracker is not None:
-                grad_tracker.update(model)
             
             optimizer.step()
             if scheduler is not None:
@@ -169,15 +164,6 @@ def train_epoch(
             total += target.size(0)
             
             total_loss += loss.item()
-            
-            # 记录到wandb
-            if use_wandb:
-                current_step = global_step + batch_idx
-                wandb.log({
-                    "training/batch_loss": loss.item(),
-                    "training/batch_accuracy": 100.0 * pred.eq(target.view_as(pred)).sum().item() / target.size(0),
-                    "training/learning_rate": optimizer.param_groups[0]["lr"]
-                }, step=current_step)
             
             progress.update(train_task, advance=1)
     
@@ -234,6 +220,49 @@ def evaluate_model(
     
     return metrics
 
+def plot_training_history(history: Dict, save_path: str):
+    """Create a beautiful training history plot with loss and accuracy metrics.
+    
+    Args:
+        history: Dictionary containing training history
+        save_path: Path to save the plot
+    """
+    # Set the style
+    sns.set_theme(style="darkgrid")
+    
+    # Create figure and axis objects with a single subplot
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+    
+    # Plot loss on primary y-axis
+    color = sns.color_palette()[0]
+    ax1.set_xlabel('Epoch', fontsize=12)
+    ax1.set_ylabel('Loss', color=color, fontsize=12)
+    ax1.plot(history['epochs'], history['train_loss'], color=color, label='Train Loss', marker='o')
+    ax1.tick_params(axis='y', labelcolor=color)
+    
+    # Create second y-axis that shares x-axis
+    ax2 = ax1.twinx()
+    color = sns.color_palette()[1]
+    ax2.set_ylabel('Accuracy (%)', color=color, fontsize=12)
+    ax2.plot(history['epochs'], [acc * 100 for acc in history['train_acc']], 
+            color=color, label='Train Accuracy', linestyle='--', marker='s')
+    ax2.plot(history['epochs'], [acc * 100 for acc in history['val_acc']], 
+            color=sns.color_palette()[2], label='Val Accuracy', linestyle='--', marker='^')
+    ax2.tick_params(axis='y', labelcolor=color)
+    
+    # Add title
+    plt.title('Training History', pad=20, fontsize=14, fontweight='bold')
+    
+    # Add legend
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax2.legend(lines1 + lines2, labels1 + labels2, loc='center right', bbox_to_anchor=(1.15, 0.5))
+    
+    # Adjust layout and save
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
 def train_and_evaluate(
     model_name: str,
     features_path: str,
@@ -241,33 +270,11 @@ def train_and_evaluate(
     config: dict,
 ):
     """Enhanced training and evaluation function with improved optimization and diagnostics"""
-    use_wandb = config.probe.wandb.use_wandb
     
     # 设置结果保存目录
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     save_dir = os.path.join("results", f"{model_name}_{timestamp}")
     os.makedirs(save_dir, exist_ok=True)
-    
-    # Setup wandb
-    if config.probe.wandb.key:
-        os.environ["WANDB_API_KEY"] = config.probe.wandb.key
-    
-    # 将 OmegaConf 配置转换为普通字典
-    wandb_config = OmegaConf.to_container(config, resolve=True)
-    
-    if use_wandb:
-        wandb.init(
-            project=config.probe.wandb.project,
-            name=f"{model_name}-linear-probe-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
-            config=wandb_config,
-            settings=wandb.Settings(start_method="thread")
-        )
-        
-        # 定义指标
-        wandb.define_metric("training/batch_*", step_metric="global_step")  # batch 级别使用 global_step
-        wandb.define_metric("training/epoch_*", step_metric="epoch")        # epoch 级别使用 epoch
-        wandb.define_metric("validation/*", step_metric="epoch")           # 验证指标使用 epoch
-
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     console.print(Panel(f"Using device: {device}", style="bold blue"))
@@ -287,7 +294,7 @@ def train_and_evaluate(
     
     # Create datasets with statistics tracking
     train_dataset = FeatureDataset(train_features, train_labels, normalize=True, is_train=True)
-    val_dataset = FeatureDataset(val_features, val_labels, normalize=True, is_train=False)
+    val_dataset = FeatureDataset(val_features, val_labels, normalize=True, train_stats=train_dataset.train_stats, is_train=False)
     
     # Print dataset statistics
     console.print("\n[bold]Dataset Statistics:[/bold]")
@@ -337,23 +344,32 @@ def train_and_evaluate(
     warmup_steps = config.probe.warmup_epochs * steps_per_epoch
     scheduler = cosine_lr(optimizer, best_lr, warmup_steps, total_steps)
     
-    # Gradient tracking
-    grad_tracker = GradientTracker()
-    
     # 训练循环
     best_val_acc = 0
     best_model_state = None
+    
+    # Initialize history tracking
+    history = {
+        'epochs': [],
+        'train_loss': [],
+        'train_acc': [],
+        'val_acc': []
+    }
     
     for epoch in range(config.probe.epochs):
         # 训练一个epoch
         train_loss, train_acc = train_epoch(
             model, train_loader, optimizer, scheduler, device, epoch=epoch,
-            grad_tracker=grad_tracker if config.probe.track_gradients else None,
-            use_wandb=use_wandb
         )
         
         # 验证
         val_metrics = evaluate_model(model, val_loader, device)
+        
+        # Update history
+        history['epochs'].append(epoch + 1)
+        history['train_loss'].append(train_loss)
+        history['train_acc'].append(train_acc)
+        history['val_acc'].append(val_metrics["Accuracy"])
         
         # 打印结果
         metrics = {
@@ -363,18 +379,6 @@ def train_and_evaluate(
             **val_metrics
         }
         print_metrics_table(metrics, epoch + 1)
-        
-        # 记录到wandb
-        if use_wandb:
-            wandb.log({
-                "epoch": epoch,
-                "training/epoch_loss": train_loss,
-                "training/epoch_accuracy": train_acc,
-                "validation/accuracy": val_metrics["Accuracy"],
-                "validation/balanced_accuracy": val_metrics["Balanced_Accuracy"],
-                "validation/macro_f1": val_metrics["Macro_F1"],
-                "validation/weighted_f1": val_metrics["Weighted_F1"]
-            }, step=epoch)
         
         # 保存最佳模型
         if val_metrics["Accuracy"] > best_val_acc:
@@ -387,6 +391,10 @@ def train_and_evaluate(
                 "config": OmegaConf.to_container(config, resolve=True),
                 "metrics": metrics
             }
+    
+    # 保存训练历史图表
+    plot_path = os.path.join(save_dir, "training_history.png")
+    plot_training_history(history, plot_path)
     
     # 保存最佳模型和结果
     model_save_path = os.path.join(save_dir, "best_model.pth")

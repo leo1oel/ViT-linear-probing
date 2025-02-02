@@ -26,7 +26,9 @@ def linear_probe(cfg: DictConfig, feature_paths: Dict[str, str]) -> Dict:
     
     return metrics
 
-@hydra.main(version_base=None, config_path="conf", config_name="config")
+current_dir = os.path.dirname(os.path.abspath(__file__))
+config_path = os.path.join(os.path.dirname(current_dir), "conf")
+@hydra.main(version_base=None, config_path=config_path, config_name="config")
 def main(cfg: DictConfig):
     """Main function for linear probe training"""
     model_name = cfg.model.name

@@ -1,0 +1,2 @@
+name: MAE
+pretrained: facebook/vit-mae-base

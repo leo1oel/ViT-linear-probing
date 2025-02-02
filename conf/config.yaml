@@ -23,15 +23,17 @@ extractor:
 probe:
   # 基础训练参数
   batch_size: 1024
-  epochs: 50
+  epochs: 100
   save_dir: ${hydra:runtime.cwd}/results/${dataset.name}
   warmup_epochs: 10
+  learning_rate: 2e-2
+  weight_decay: 1e-6
   
   # 超参数搜索配置
   hyperparameter_search:
     enabled: true
-    quick_epochs: 3  # 快速训练的轮数
-    learning_rates: [1e-5, 1e-4, 1e-3, 1e-2]
+    quick_epochs: 10  # 快速训练的轮数
+    learning_rates: [1e-3, 1e-2, 2e-2, 5e-2]
     weight_decays: [0, 1e-6, 1e-3]
 
 hydra:

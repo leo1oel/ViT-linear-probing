@@ -4,6 +4,7 @@ from omegaconf import DictConfig
 from transformers import AutoModel, CLIPVisionModel
 from feature_extractor import FeatureExtractor, DatasetLoader, DatasetConfig
 from rich.console import Console
+from rich.panel import Panel
 from typing import Dict
 
 console = Console()
@@ -31,10 +32,15 @@ def extract_features(cfg: DictConfig) -> Dict[str, str]:
     )
     
     # Load model
-    if cfg.model.name.lower() == "clip":
+    if "clip" in cfg.model.name.lower():
         model = CLIPVisionModel.from_pretrained(cfg.model.pretrained)
+        console.print(Panel("CLIP model loaded", style="bold red"))
+    elif "mae" in cfg.model.name.lower():
+        model = AutoModel.from_pretrained(cfg.model.pretrained, mask_ratio=0.0)
+        console.print(Panel("MAE model loaded with mask ratio set to 0.0"), style="bold red")
     else:
         model = AutoModel.from_pretrained(cfg.model.pretrained)
+        console.print(Panel("Auto model loaded"), style="bold red")
     
     # Create dataset loader
     dataset_loader = DatasetLoader(dataset_config)
@@ -46,7 +52,7 @@ def extract_features(cfg: DictConfig) -> Dict[str, str]:
     feature_paths = {}
     
     # Get splits to process from config
-    splits = cfg.extractor.get('splits', ["train", "val"])
+    splits = cfg.extractor.splits
     
     # Process requested splits
     for split in splits:
@@ -70,7 +76,9 @@ def extract_features(cfg: DictConfig) -> Dict[str, str]:
     
     return feature_paths
 
-@hydra.main(version_base=None, config_path="conf", config_name="config")
+current_dir = os.path.dirname(os.path.abspath(__file__))
+config_path = os.path.join(os.path.dirname(current_dir), "conf")
+@hydra.main(version_base=None, config_path=config_path, config_name="config")
 def main(cfg: DictConfig) -> None:
     """Main entry point"""
     extract_features(cfg)

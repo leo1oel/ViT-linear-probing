@@ -1,0 +1,4 @@
+name: cifar10.1
+num_classes: 10  # CIFAR10.1 has 10 classes like CIFAR10
+input_size: 32  # CIFAR10 standard input size
+data_path: /pasteur/u/yuhuiz/data/CIFAR10.1

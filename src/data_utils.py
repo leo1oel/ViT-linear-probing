@@ -69,26 +69,6 @@ class CIFAR10Dataset(ImageDataset):
             self.root, train=False, transform=self.transform, download=True
         )
 
-class CIFAR100WithPaths(datasets.CIFAR100):
-    """扩展的 CIFAR100，返回图片的索引作为路径"""
-    def __init__(self, root, train=True, transform=None, download=False):
-        super().__init__(root, train=train, transform=transform, download=download)
-
-    def __getitem__(self, index):
-        img, target = super().__getitem__(index)
-        path = f"cifar100_{'train' if self.train else 'test'}_{index}"
-        return img, target, path
-
-class CIFAR100Dataset(ImageDataset):
-    """CIFAR-100 dataset handler"""
-    def _setup(self):
-        self.train_data = CIFAR100WithPaths(
-            self.root, train=True, transform=self.transform, download=True
-        )
-        self.val_data = CIFAR100WithPaths(
-            self.root, train=False, transform=self.transform, download=True
-        )
-
 class StanfordCarsDataset(ImageDataset):
     """Stanford Cars dataset handler"""
     def _setup(self):
@@ -243,24 +223,58 @@ class CUBDataset(ImageDataset):
 class ImageNetV2Dataset(ImageDataset):
     """ImageNetV2 dataset handler - validation only dataset"""
     def _setup(self):
-        self.train_data = ImageFolderWithPaths(
-            self.root,
-            transform=self.transform
-        )  # ImageNetV2 only has validation set
+        self.train_data = None
         self.val_data = ImageFolderWithPaths(
             self.root,
             transform=self.transform
         )
+
+class CIFAR101Dataset(ImageDataset):
+    """CIFAR10.1 dataset handler - validation only dataset"""
+    def _setup(self):
+        self.train_data = None  # CIFAR10.1 is validation only
+        
+        # Load data and labels from NPY files
+        data = np.load(os.path.join(self.root, 'cifar10.1_v6_data.npy'))
+        labels = np.load(os.path.join(self.root, 'cifar10.1_v6_labels.npy'))
+        
+        # CIFAR10 class names
+        classes = ['airplane', 'automobile', 'bird', 'cat', 'deer', 
+                  'dog', 'frog', 'horse', 'ship', 'truck']
+        
+        class CIFAR101Subset(Dataset):
+            def __init__(self, data, labels, transform=None):
+                self.data = data
+                self.labels = labels
+                self.transform = transform
+                self.classes = classes  # Use outer classes
+                self.class_to_idx = {cls_name: idx for idx, cls_name in enumerate(classes)}
+            
+            def __getitem__(self, index):
+                img = self.data[index]
+                target = int(self.labels[index])
+                img = Image.fromarray(img)
+                
+                if self.transform:
+                    img = self.transform(img)
+                    
+                path = f"cifar10.1_val_{index}"
+                return img, target, path
+            
+            def __len__(self):
+                return len(self.data)
+        
+        self.val_data = CIFAR101Subset(data, labels, transform=self.transform)
 
 # 数据集注册表
 DATASET_REGISTRY: Dict[str, type] = {
     'imagenet': ImageNetDataset,
     'imagenetv2': ImageNetV2Dataset,
     'cifar10': CIFAR10Dataset,
-    'cifar100': CIFAR100Dataset,
-    'cub': CUBDataset,
-    'flowers102': Flowers102Dataset,
     'stanford_cars': StanfordCarsDataset,
+    'flowers102': Flowers102Dataset,
+    'cub': CUBDataset,
+    'cifar10.1': CIFAR101Dataset,
 }
 
 def get_dataset(name: str, root: str, transform: Optional[transforms.Compose] = None) -> ImageDataset:
@@ -273,13 +287,18 @@ def get_dataset(name: str, root: str, transform: Optional[transforms.Compose] = 
 
 class FeatureDataset(Dataset):
     """Enhanced dataset class with feature normalization and statistics tracking"""
-    def __init__(self, features: np.ndarray, labels: np.ndarray, normalize: bool = True, is_train: bool = True):
+    def __init__(self, features: np.ndarray, labels: np.ndarray, normalize: bool = True, train_stats: Dict = None, is_train: bool = True):
         # Store original statistics for debugging
-        
         if normalize:
-            # Normalize features using robust statistics
-            mean = features.mean(0, keepdims=True)
-            std = features.std(0, keepdims=True)
+            if is_train:
+                mean = features.mean(0, keepdims=True)
+                std = features.std(0, keepdims=True)
+                self.train_stats = {'mean': mean, 'std': std}
+            else:
+                assert train_stats is not None, "Need training stats for validation/test set"
+                mean = train_stats['mean']
+                std = train_stats['std']
+
             features = (features - mean) / (std + 1e-5)
             
         self.features = torch.from_numpy(features).float()

@@ -1,4 +1,4 @@
 name: imagenetv2
 num_classes: 1000  # ImageNetV2 has 1000 classes like ImageNet
 input_size: 224  # Standard ImageNet input size
-data_path: /pasteur/u/yuhuiz/data/ImageNetV2/imagenetv2-matched-frequency-format-val
+data_path: /pasteur/u/yuhuiz/data/ImageNetV2 copy/imagenetv2-matched-frequency-format-val

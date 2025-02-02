@@ -1,3 +1,0 @@
-name: cifar100
-num_classes: 100
-input_size: 32  # CIFAR-100的原始图像大小
