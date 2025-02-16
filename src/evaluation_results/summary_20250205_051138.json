@@ -1,0 +1,10 @@
+{
+    "/pasteur2/u/yuhuiz/yiming/experiments/src/cached_features/imagenetv2/dino_val_features.h5": {
+        "accuracy": "0.6456",
+        "json_file": "evaluation_results/imagenetv2_20250205_051137_results.json"
+    },
+    "/pasteur2/u/yuhuiz/yiming/experiments/src/cached_features/imagenet/dino_val_features.h5": {
+        "accuracy": "0.7653",
+        "json_file": "evaluation_results/imagenet_20250205_051138_results.json"
+    }
+}

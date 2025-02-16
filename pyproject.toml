@@ -21,6 +21,7 @@ dependencies = [
     "tqdm>=4.67.1",
     "transformers>=4.48.1",
     "wandb>=0.19.4",
+    "webdataset>=0.2.100",
 ]
 
 [tool.uv.sources]

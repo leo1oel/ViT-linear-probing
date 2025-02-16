@@ -12,11 +12,12 @@ from rich.panel import Panel
 from datetime import datetime
 from typing import Optional, List, Tuple, Dict
 from data_utils import FeatureDataset
-from models import LinearProbe 
+from models import LinearProbe, MLPProbe
 from sklearn.metrics import classification_report, balanced_accuracy_score
 from omegaconf import OmegaConf
 import matplotlib.pyplot as plt
 import seaborn as sns
+import json
 
 console = Console()
 
@@ -269,7 +270,7 @@ def train_and_evaluate(
     val_features_path: str,
     config: dict,
 ):
-    """Enhanced training and evaluation function with improved optimization and diagnostics"""
+    """Enhanced training and evaluation function with proper model saving"""
     
     # 设置结果保存目录
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -286,7 +287,6 @@ def train_and_evaluate(
         with h5py.File(file_path, 'r') as f:
             features = f['last_hidden_cls'][:]
             labels = f['targets'][:]
-
         return features, labels
     
     train_features, train_labels = load_features(features_path, "train")
@@ -296,28 +296,54 @@ def train_and_evaluate(
     train_dataset = FeatureDataset(train_features, train_labels, normalize=True, is_train=True)
     val_dataset = FeatureDataset(val_features, val_labels, normalize=True, train_stats=train_dataset.train_stats, is_train=False)
     
-    # Print dataset statistics
-    console.print("\n[bold]Dataset Statistics:[/bold]")
-    train_dataset.print_statistics()
-    val_dataset.print_statistics()
-    
     train_loader = DataLoader(
         train_dataset,
-        batch_size=config.probe.batch_size,
+        batch_size=config.get("batch_size", 1024),
         shuffle=True,
-        num_workers=4,
-        pin_memory=True,
-        drop_last=True
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config.probe.batch_size,
-        shuffle=False,
-        num_workers=4,
+        num_workers=config.get("num_workers", 4),
         pin_memory=True
     )
     
-    # 超参数搜索
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config.get("batch_size", 1024),
+        shuffle=False,
+        num_workers=config.get("num_workers", 4),
+        pin_memory=True
+    )
+    
+    # Initialize model
+    input_dim = train_features.shape[1]
+    num_classes = len(np.unique(train_labels))
+    
+    probe_config = config.get("probe", {})
+    probe_type = probe_config.get("type", "linear")
+    
+    if probe_type == "linear":
+        model = LinearProbe(input_dim, num_classes)
+        console.print(Panel("Using Linear Probe", style="bold blue"))
+    elif probe_type == "mlp":
+        mlp_config = probe_config.get("mlp", {})
+        model = MLPProbe(
+            input_dim=input_dim,
+            num_classes=num_classes,
+            hidden_dim=mlp_config.get("hidden_dim", 2048),
+            num_layers=mlp_config.get("num_layers", 2),
+            dropout=mlp_config.get("dropout", 0.1)
+        )
+        console.print(Panel(
+            f"Using MLP Probe with:\n"
+            f"  Hidden Dim: {mlp_config.get('hidden_dim', 2048)}\n"
+            f"  Num Layers: {mlp_config.get('num_layers', 2)}\n"
+            f"  Dropout: {mlp_config.get('dropout', 0.1)}",
+            style="bold blue"
+        ))
+    else:
+        raise ValueError(f"Unknown probe type: {probe_type}")
+    
+    model = model.to(device)
+    
+    # 超参数搜索和记录
     if config.probe.hyperparameter_search.enabled:
         console.print(Panel("Starting hyperparameter search...", style="bold cyan"))
         best_lr, best_wd = find_best_hyperparams(
@@ -334,8 +360,16 @@ def train_and_evaluate(
         best_lr = config.probe.learning_rate
         best_wd = config.probe.weight_decay
     
-    # Model setup with best hyperparameters
-    model = LinearProbe(train_features.shape[1], len(np.unique(train_labels))).to(device)
+    # 记录实际使用的超参数
+    actual_hyperparams = {
+        "learning_rate": best_lr,
+        "weight_decay": best_wd,
+        "batch_size": config.get("batch_size", 1024),
+        "warmup_epochs": config.probe.warmup_epochs,
+        "total_epochs": config.probe.epochs,
+    }
+    
+    # Model setup with recorded hyperparameters
     optimizer = optim.AdamW(model.parameters(), lr=best_lr, weight_decay=best_wd)
     
     # Learning rate schedule setup
@@ -344,11 +378,6 @@ def train_and_evaluate(
     warmup_steps = config.probe.warmup_epochs * steps_per_epoch
     scheduler = cosine_lr(optimizer, best_lr, warmup_steps, total_steps)
     
-    # 训练循环
-    best_val_acc = 0
-    best_model_state = None
-    
-    # Initialize history tracking
     history = {
         'epochs': [],
         'train_loss': [],
@@ -356,13 +385,17 @@ def train_and_evaluate(
         'val_acc': []
     }
     
+    # 训练循环
+    best_val_acc = 0
+    best_epoch_metrics = None
+    best_model = None
+    best_model_state = None
+    
     for epoch in range(config.probe.epochs):
-        # 训练一个epoch
         train_loss, train_acc = train_epoch(
             model, train_loader, optimizer, scheduler, device, epoch=epoch,
         )
         
-        # 验证
         val_metrics = evaluate_model(model, val_loader, device)
         
         # Update history
@@ -371,50 +404,63 @@ def train_and_evaluate(
         history['train_acc'].append(train_acc)
         history['val_acc'].append(val_metrics["Accuracy"])
         
-        # 打印结果
-        metrics = {
+        current_metrics = {
             "Epoch": epoch + 1,
             "Train Loss": train_loss,
             "Train Accuracy": train_acc,
             **val_metrics
         }
-        print_metrics_table(metrics, epoch + 1)
+        print_metrics_table(current_metrics, epoch + 1)
         
-        # 保存最佳模型
+        # 保存最佳模型及其对应的指标
         if val_metrics["Accuracy"] > best_val_acc:
             best_val_acc = val_metrics["Accuracy"]
+            best_epoch_metrics = current_metrics.copy()
+            # 保存模型状态
             best_model_state = {
-                "epoch": epoch + 1,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_accuracy": best_val_acc,
-                "config": OmegaConf.to_container(config, resolve=True),
-                "metrics": metrics
+                k: v.clone().detach() if isinstance(v, torch.Tensor) else v 
+                for k, v in model.state_dict().items()
             }
+            best_model = {
+                "epoch": epoch + 1,
+                "model_state_dict": best_model_state,
+                "optimizer_state_dict": {
+                    k: v.clone().detach() if isinstance(v, torch.Tensor) else v 
+                    for k, v in optimizer.state_dict().items()
+                },
+                "val_accuracy": best_val_acc,
+                "hyperparameters": actual_hyperparams,
+                "train_stats": train_dataset.train_stats,
+                "config": OmegaConf.to_container(config, resolve=True),
+                "metrics": best_epoch_metrics.copy()
+            }
+    
+    # 恢复到最佳模型状态
+    model.load_state_dict(best_model_state)
     
     # 保存训练历史图表
     plot_path = os.path.join(save_dir, "training_history.png")
     plot_training_history(history, plot_path)
     
-    # 保存最佳模型和结果
+    # 保存最佳模型
     model_save_path = os.path.join(save_dir, "best_model.pth")
-    torch.save(best_model_state, model_save_path)
+    torch.save(best_model, model_save_path)
     
-    # 保存完整的评估结果
+    # 保存完整的评估结果，使用最佳模型的指标
     results = {
         "model_name": model_name,
-        "best_epoch": best_model_state["epoch"],
+        "best_epoch": best_model["epoch"],
         "best_val_accuracy": best_val_acc,
-        "final_metrics": metrics,
+        "best_metrics": best_epoch_metrics,
+        "final_metrics": current_metrics,
+        "hyperparameters": actual_hyperparams,
         "config": OmegaConf.to_container(config, resolve=True),
         "timestamp": timestamp
     }
     
-    import json
     results_path = os.path.join(save_dir, "results.json")
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
     
     console.print(Panel(f"[green]Training completed! Results saved to: {save_dir}"))
-    
     return results

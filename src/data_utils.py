@@ -9,6 +9,8 @@ import json
 import scipy.io as sio
 from PIL import Image
 from feature_extractor import ImageFolderWithPaths
+import webdataset as wds
+import io
 
 console = Console()
 
@@ -23,7 +25,7 @@ class ImageDataset:
     
     def _get_default_transform(self) -> transforms.Compose:
         return transforms.Compose([
-            transforms.Resize(256),
+            transforms.Resize(224),
             transforms.CenterCrop(224),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], 
@@ -266,6 +268,32 @@ class CIFAR101Dataset(ImageDataset):
         
         self.val_data = CIFAR101Subset(data, labels, transform=self.transform)
 
+class DataComp12MDataset(ImageDataset):
+    def _setup(self):
+        url_pattern = [f"{self.root}/{i:08d}.tar" for i in range(1024)]
+        
+        def process_sample(sample):
+            image, key, local_path, txt, json = sample
+            image = Image.open(io.BytesIO(image)).convert('RGB')
+            if self.transform:
+                image = self.transform(image)
+            
+            # 从 local_path 获取 tar 编号
+            tar_idx = int(local_path.split('/')[-1].split('.')[0])
+            full_path = f"{tar_idx:08d}_{key}"
+            
+            return image, 0, full_path
+        
+        self.train_data = (
+            wds.WebDataset(url_pattern, shardshuffle=False)
+            .decode()
+            .to_tuple('jpg', '__key__', '__local_path__', 'txt', 'json')
+            .map(process_sample)
+            .with_length(10151037)
+        )
+        self.val_data = None
+
+
 # 数据集注册表
 DATASET_REGISTRY: Dict[str, type] = {
     'imagenet': ImageNetDataset,
@@ -275,6 +303,8 @@ DATASET_REGISTRY: Dict[str, type] = {
     'flowers102': Flowers102Dataset,
     'cub': CUBDataset,
     'cifar10.1': CIFAR101Dataset,
+    'datacomp12m': DataComp12MDataset,
+    'datacomp1.2m': DataComp12MDataset
 }
 
 def get_dataset(name: str, root: str, transform: Optional[transforms.Compose] = None) -> ImageDataset:

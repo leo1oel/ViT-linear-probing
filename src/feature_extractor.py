@@ -109,6 +109,8 @@ class DatasetLoader:
             pin_memory=True
         )
 
+        if self.config.dataset_name == 'datacomp12m' or self.config.dataset_name == 'datacomp1.2m':
+            return data_loader, {cls: idx for idx, cls in enumerate(['unknown'])}
         # Get class mapping
         class_to_idx = getattr(full_dataset, 'class_to_idx', None)
         if class_to_idx is None and hasattr(full_dataset, 'dataset'):

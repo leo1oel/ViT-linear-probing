@@ -1,0 +1,17 @@
+image1_path,image2_path,clip_similarity,dino_similarity,pair_type
+/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n07747607/n07747607_14141.JPEG,/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n07747607/n07747607_41750.JPEG,0.9509862661361694,0.568665087223053,high_clip_low_dino
+/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n04317175/n04317175_3634.JPEG,/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n04317175/n04317175_5655.JPEG,0.9599685072898865,0.5313069820404053,high_clip_low_dino
+/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n03452741/n03452741_2938.JPEG,/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n04515003/n04515003_5626.JPEG,0.9516910910606384,0.5161384344100952,high_clip_low_dino
+/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n04409515/n04409515_11735.JPEG,/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n04409515/n04409515_7624.JPEG,0.9558547735214233,0.5795117020606995,high_clip_low_dino
+/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n04005630/n04005630_1459.JPEG,/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n04005630/n04005630_99218.JPEG,0.9596744775772095,0.5903401374816895,high_clip_low_dino
+/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n01773797/n01773797_5923.JPEG,/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n01773797/n01773797_6668.JPEG,0.9500123262405396,0.5307101011276245,high_clip_low_dino
+/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n04317175/n04317175_10104.JPEG,/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n04317175/n04317175_871.JPEG,0.950811505317688,0.5897233486175537,high_clip_low_dino
+/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n04317175/n04317175_3161.JPEG,/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n04317175/n04317175_9270.JPEG,0.9544413089752197,0.5454526543617249,high_clip_low_dino
+/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n02999410/n02999410_32721.JPEG,/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n02999410/n02999410_8214.JPEG,0.9543176889419556,0.5968871712684631,high_clip_low_dino
+/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n01773157/n01773157_860.JPEG,/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n01773797/n01773797_2067.JPEG,0.9505305290222168,0.5600690841674805,high_clip_low_dino
+/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n04317175/n04317175_11985.JPEG,/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n04317175/n04317175_1583.JPEG,0.9521703720092773,0.5807181596755981,high_clip_low_dino
+/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n01773157/n01773157_9497.JPEG,/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n01773797/n01773797_1066.JPEG,0.9505226016044617,0.5919708609580994,high_clip_low_dino
+/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n03272010/n03272010_330.JPEG,/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n03272010/n03272010_4806.JPEG,0.9631760120391846,0.5618365406990051,high_clip_low_dino
+/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n04515003/n04515003_31478.JPEG,/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n04515003/n04515003_31531.JPEG,0.9543667435646057,0.47376304864883423,high_clip_low_dino
+/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n02708093/n02708093_4783.JPEG,/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n02708093/n02708093_5598.JPEG,0.9520139694213867,0.5494313836097717,high_clip_low_dino
+/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n04317175/n04317175_1658.JPEG,/pasteur/u/yuhuiz/data/ImageNet/imagenet/train/n04317175/n04317175_9038.JPEG,0.950857400894165,0.5676916241645813,high_clip_low_dino
