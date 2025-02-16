@@ -2,6 +2,7 @@ defaults:
   - _self_
   - model: clip
   - dataset: imagenet
+  - deepspeed: zero1
   - override hydra/hydra_logging: disabled
   - override hydra/job_logging: disabled
 
@@ -38,18 +39,28 @@ probe:
   # 超参数搜索配置
   # hyperparameter_search:
   #   enabled: true
-  #   quick_epochs: 20  # 快速训练的轮数
-  #   learning_rates: [1e-6, 1e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2]
-  #   weight_decays: [0, 1e-6, 1e-5, 1e-4, 1e-3]
+  #   quick_epochs: 30  # 快速训练的轮数
+  #   learning_rates: [1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2]
+  #   weight_decays: [0, 5e-4, 1e-3, 5e-2]
   hyperparameter_search:
     enabled: true
     quick_epochs: 5  # 快速训练的轮数
     learning_rates: [1e-6, 1e-5, 1e-4, 1e-3]
     weight_decays: [0, 1e-6, 1e-3]
 
+# Hydra 配置
 hydra:
+  job:
+    chdir: false  # 防止 Hydra 改变工作目录
   run:
-    dir: outputs/${dataset.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: .  # 防止创建输出目录
   sweep:
-    dir: multirun/${dataset.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
-    subdir: ${hydra.job.override_dirname}
+    dir: .
+    subdir: .
+  
+  # 命令行参数配置
+  runtime:
+    choices:
+      local_rank: 0  # 添加对 local_rank 参数的支持
+
+steps_per_epoch: null

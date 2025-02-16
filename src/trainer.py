@@ -11,37 +11,38 @@ from rich.table import Table
 from rich.panel import Panel
 from datetime import datetime
 from typing import Optional, List, Tuple, Dict
-from data_utils import FeatureDataset
+from utils.data_utils import FeatureDataset
 from models import LinearProbe, MLPProbe
 from sklearn.metrics import classification_report, balanced_accuracy_score
 from omegaconf import OmegaConf
 import matplotlib.pyplot as plt
 import seaborn as sns
-import json
+import orjson
+from utils.progress_utils import create_progress_bar, print_metrics_table
+from utils.plot_utils import plot_training_history
+import arrow
+from contextlib import contextmanager, nullcontext
+from pathlib import Path
+import deepspeed
 
 console = Console()
 
-def create_progress_bar() -> Progress:
-    return Progress(
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(complete_style="green", finished_style="green"),
-        TaskProgressColumn(),
-        TimeRemainingColumn(),
-        console=console
-    )
+@contextmanager
+def distributed_sync():
+    """在分布式训练中同步所有进程的上下文管理器"""
+    try:
+        yield
+    finally:
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
 
-def print_metrics_table(metrics: Dict, epoch: int):
-    table = Table(title=f"Epoch {epoch} Results", show_header=True, header_style="bold magenta")
-    table.add_column("Metric", style="cyan")
-    table.add_column("Value", justify="right", style="green")
+class NullContextProgress:
+    """空的进度条上下文，用于非主进程"""
+    def update(self, *args, **kwargs):
+        pass
     
-    for key, value in metrics.items():
-        if isinstance(value, float):
-            table.add_row(key, f"{value:.2f}")
-        else:
-            table.add_row(key, str(value))
-    
-    console.print(table)
+    def add_task(self, *args, **kwargs):
+        return None
 
 def assign_learning_rate(param_group: dict, new_lr: float):
     param_group["lr"] = new_lr
@@ -74,6 +75,7 @@ def find_best_hyperparams(
     learning_rates: List[float],
     weight_decays: List[float],
     quick_epochs: int,
+    config: dict,
 ) -> Tuple[float, float]:
     """Find best learning rate and weight decay using grid search"""
     best_acc = 0
@@ -101,15 +103,45 @@ def find_best_hyperparams(
             for wd in weight_decays:
                 console.print(f"\n[yellow]Testing LR={lr:.1e}, WD={wd:.1e}[/yellow]")
                 model = LinearProbe(input_dim, num_classes).to(device)
-                optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
+
+                if config.deepspeed.enabled and config.deepspeed.fp16.enabled:
+                    model = model.half()
+
+                if config.deepspeed.enabled:
+                    steps_per_epoch = len(train_loader)
+                    warmup_steps = int(config.probe.warmup_epochs * steps_per_epoch)
+                    total_steps = int(config.probe.epochs * steps_per_epoch)
+                    
+                    # 创建DeepSpeed配置的副本并更新
+                    ds_config = OmegaConf.to_container(config.deepspeed, resolve=True)
+                    ds_config['train_micro_batch_size_per_gpu'] = config.probe.batch_size
+                    ds_config['optimizer']['params']['lr'] = lr
+                    ds_config['optimizer']['params']['weight_decay'] = wd
+                    ds_config['scheduler']['params']['warmup_num_steps'] = warmup_steps
+                    ds_config['scheduler']['params']['total_num_steps'] = total_steps
+                    
+                    model_engine, _, _, _ = deepspeed.initialize(
+                        model=model,
+                        config=ds_config
+                    )
+                    model = model_engine
+                else:
+                    model_engine = model
+                    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
                 
-                # Quick training with progress tracking
                 for epoch in range(quick_epochs):
-                    train_loss, train_acc = train_epoch(model, train_loader, optimizer, None, device, epoch=epoch)
+                    train_loss, train_acc = train_epoch(
+                        model_engine,
+                        train_loader,
+                        optimizer if not config.deepspeed.enabled else None,
+                        None,
+                        device,
+                        epoch=epoch,
+                        use_deepspeed=config.deepspeed.enabled
+                    )
                     console.print(f"[dim]Quick Epoch {epoch + 1}/{quick_epochs}, Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%[/dim]")
                 
-                # Validation
-                val_metrics = evaluate_model(model, val_loader, device)
+                val_metrics = evaluate_model(model_engine, val_loader, device, use_deepspeed=config.deepspeed.enabled)
                 val_acc = val_metrics["Accuracy"]
                 results_table.add_row(f"{lr:.1e}", f"{wd:.1e}", f"{val_acc:.2f}%")
                 
@@ -121,7 +153,6 @@ def find_best_hyperparams(
                 
                 progress.update(search_task, advance=1)
     
-    # 打印结果表格
     console.print(results_table)
     console.print(f"\n[bold green]Best configuration: LR={best_lr:.1e}, WD={best_wd:.1e}, Val Acc={best_acc:.2f}%[/bold green]")
     
@@ -130,46 +161,74 @@ def find_best_hyperparams(
 def train_epoch(
     model: nn.Module,
     train_loader: DataLoader,
-    optimizer: optim.Optimizer,
+    optimizer: Optional[optim.Optimizer],
     scheduler: Optional[object],
     device: str,
     epoch: int,
+    use_deepspeed: bool = False,
 ):
     model.train()
     total_loss = 0
     correct = 0
     total = 0
     
-    progress = create_progress_bar()
-    train_task = progress.add_task("[cyan]Training...", total=len(train_loader))
-    
-    with progress:
+    # 只在主进程显示进度条
+    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+        progress = create_progress_bar()
+        train_task = progress.add_task("[cyan]Training...", total=len(train_loader))
+        progress_context = progress
+    else:
+        progress_context = nullcontext()
+        
+    with progress_context:
         for batch_idx, (data, target) in enumerate(train_loader):
             data, target = data.to(device), target.to(device)
-            optimizer.zero_grad()
-            output = model(data)
-            loss = nn.CrossEntropyLoss()(output, target)
-            loss.backward()
             
-            optimizer.step()
-            if scheduler is not None:
-                if isinstance(scheduler, torch.optim.lr_scheduler._LRScheduler):
-                    if batch_idx == 0:  # 对于epoch-based的scheduler
-                        scheduler.step()
-                else:  # 对于cosine_lr这样的自定义scheduler
-                    scheduler(batch_idx)
+            if use_deepspeed:
+                output = model(data)
+                loss = nn.CrossEntropyLoss()(output, target)
+                model.backward(loss)
+                model.step()
+            else:
+                optimizer.zero_grad()
+                output = model(data)
+                loss = nn.CrossEntropyLoss()(output, target)
+                loss.backward()
+                optimizer.step()
+                
+                if scheduler is not None:
+                    if isinstance(scheduler, torch.optim.lr_scheduler._LRScheduler):
+                        if batch_idx == 0:
+                            scheduler.step()
+                    else:
+                        scheduler(batch_idx)
             
-            # 计算准确率
             pred = output.argmax(dim=1, keepdim=True)
             correct += pred.eq(target.view_as(pred)).sum().item()
             total += target.size(0)
             
             total_loss += loss.item()
             
-            progress.update(train_task, advance=1)
+            if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+                progress.update(train_task, advance=1)
+    
+    # 在分布式训练中收集所有进程的指标
+    if torch.distributed.is_initialized():
+        world_size = torch.distributed.get_world_size()
+        # 收集损失
+        loss_tensor = torch.tensor(total_loss).cuda()
+        torch.distributed.all_reduce(loss_tensor)
+        total_loss = loss_tensor.item() / world_size
+        # 收集正确预测数和总样本数
+        correct_tensor = torch.tensor(correct).cuda()
+        total_tensor = torch.tensor(total).cuda()
+        torch.distributed.all_reduce(correct_tensor)
+        torch.distributed.all_reduce(total_tensor)
+        correct = correct_tensor.item()
+        total = total_tensor.item()
     
     avg_loss = total_loss / len(train_loader)
-    accuracy = 100.0 * correct / total  # 修复：乘以100使其与验证集准确率保持一致
+    accuracy = 100.0 * correct / total
     
     return avg_loss, accuracy
 
@@ -177,34 +236,79 @@ def evaluate_model(
     model: nn.Module,
     data_loader: DataLoader,
     device: str,
+    use_deepspeed: bool = False,
 ) -> Dict[str, float]:
-    """Evaluate model on the given data loader"""
+    """Evaluate model on the given data loader with distributed support"""
     model.eval()
     all_preds = []
     all_targets = []
     
-    progress = create_progress_bar()
-    eval_task = progress.add_task("[cyan]Evaluating...", total=len(data_loader))
+    # 只在主进程显示进度条
+    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+        progress = create_progress_bar()
+        eval_task = progress.add_task("[cyan]Evaluating...", total=len(data_loader))
+        progress_context = progress
+    else:
+        progress_context = nullcontext()
     
-    with progress:
+    with progress_context:
         with torch.no_grad():
             for features, targets in data_loader:
                 features, targets = features.to(device), targets.to(device)
-                outputs = model(features)
+                if use_deepspeed:
+                    outputs = model.module(features)
+                else:
+                    outputs = model(features)
                 _, predicted = outputs.max(1)
                 all_preds.extend(predicted.cpu().numpy())
                 all_targets.extend(targets.cpu().numpy())
-                progress.update(eval_task, advance=1)
+                
+                if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+                    progress.update(eval_task, advance=1)
     
-    # Convert to numpy arrays for sklearn metrics
+    # 在分布式训练中收集所有进程的预测结果
+    if torch.distributed.is_initialized():
+        # 将预测结果转换为张量，确保使用相同的数据类型
+        all_preds_tensor = torch.tensor(all_preds, dtype=torch.float32, device=device)
+        all_targets_tensor = torch.tensor(all_targets, dtype=torch.float32, device=device)
+        
+        # 获取每个进程的预测数量
+        local_size = torch.tensor([len(all_preds)], device=device)
+        all_sizes = [torch.zeros_like(local_size) for _ in range(torch.distributed.get_world_size())]
+        torch.distributed.all_gather(all_sizes, local_size)
+        
+        # 收集所有进程的预测结果
+        max_size = max(size.item() for size in all_sizes)
+        
+        # 填充到最大长度
+        if len(all_preds) < max_size:
+            padding_size = max_size - len(all_preds)
+            all_preds_tensor = torch.cat([all_preds_tensor, torch.zeros(padding_size, dtype=torch.float32, device=device)])
+            all_targets_tensor = torch.cat([all_targets_tensor, torch.zeros(padding_size, dtype=torch.float32, device=device)])
+        
+        # 收集所有预测结果
+        all_preds_gathered = [torch.zeros(max_size, dtype=torch.float32, device=device) for _ in range(torch.distributed.get_world_size())]
+        all_targets_gathered = [torch.zeros(max_size, dtype=torch.float32, device=device) for _ in range(torch.distributed.get_world_size())]
+        
+        torch.distributed.all_gather(all_preds_gathered, all_preds_tensor)
+        torch.distributed.all_gather(all_targets_gathered, all_targets_tensor)
+        
+        # 移除填充并合并结果
+        all_preds = []
+        all_targets = []
+        for pred, target, size in zip(all_preds_gathered, all_targets_gathered, all_sizes):
+            # 转换回整数类型用于评估
+            all_preds.extend(pred[:size.item()].long().cpu().numpy())
+            all_targets.extend(target[:size.item()].long().cpu().numpy())
+    
     all_preds = np.array(all_preds)
     all_targets = np.array(all_targets)
     
-    # Calculate metrics
+    # 计算评估指标
     accuracy = (all_preds == all_targets).mean() * 100
     balanced_accuracy = balanced_accuracy_score(all_targets, all_preds) * 100
     
-    # Get detailed classification report
+    # 获取详细的分类报告
     report = classification_report(
         all_targets,
         all_preds,
@@ -221,48 +325,49 @@ def evaluate_model(
     
     return metrics
 
-def plot_training_history(history: Dict, save_path: str):
-    """Create a beautiful training history plot with loss and accuracy metrics.
+
+def save_best_model(model, optimizer, best_val_acc, epoch, actual_hyperparams, 
+                    train_stats, config, best_epoch_metrics, save_dir, use_deepspeed):
+    best_model = {
+        "epoch": epoch + 1,
+        "val_accuracy": best_val_acc,
+        "hyperparameters": actual_hyperparams,
+        "train_stats": train_stats,
+        "config": OmegaConf.to_container(config, resolve=True),
+        "metrics": best_epoch_metrics.copy()
+    }
     
-    Args:
-        history: Dictionary containing training history
-        save_path: Path to save the plot
-    """
-    # Set the style
-    sns.set_theme(style="darkgrid")
+    if use_deepspeed:
+        # DeepSpeed 保存
+        checkpoint_path = save_dir / f"checkpoint-epoch{epoch+1}"
+        model.save_checkpoint(checkpoint_path, client_state=best_model)
+    else:
+        # PyTorch 保存
+        best_model.update({
+            "model_state_dict": {
+                k: v.clone().detach() if isinstance(v, torch.Tensor) else v 
+                for k, v in model.state_dict().items()
+            },
+            "optimizer_state_dict": {
+                k: v.clone().detach() if isinstance(v, torch.Tensor) else v 
+                for k, v in optimizer.state_dict().items()
+            }
+        })
+        torch.save(best_model, save_dir / "best_model.pth")
     
-    # Create figure and axis objects with a single subplot
-    fig, ax1 = plt.subplots(figsize=(10, 6))
-    
-    # Plot loss on primary y-axis
-    color = sns.color_palette()[0]
-    ax1.set_xlabel('Epoch', fontsize=12)
-    ax1.set_ylabel('Loss', color=color, fontsize=12)
-    ax1.plot(history['epochs'], history['train_loss'], color=color, label='Train Loss', marker='o')
-    ax1.tick_params(axis='y', labelcolor=color)
-    
-    # Create second y-axis that shares x-axis
-    ax2 = ax1.twinx()
-    color = sns.color_palette()[1]
-    ax2.set_ylabel('Accuracy (%)', color=color, fontsize=12)
-    ax2.plot(history['epochs'], [acc * 100 for acc in history['train_acc']], 
-            color=color, label='Train Accuracy', linestyle='--', marker='s')
-    ax2.plot(history['epochs'], [acc * 100 for acc in history['val_acc']], 
-            color=sns.color_palette()[2], label='Val Accuracy', linestyle='--', marker='^')
-    ax2.tick_params(axis='y', labelcolor=color)
-    
-    # Add title
-    plt.title('Training History', pad=20, fontsize=14, fontweight='bold')
-    
-    # Add legend
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax2.legend(lines1 + lines2, labels1 + labels2, loc='center right', bbox_to_anchor=(1.15, 0.5))
-    
-    # Adjust layout and save
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.close()
+    return best_model
+
+def load_best_model(model, optimizer, save_path, use_deepspeed):
+    if use_deepspeed:
+        # DeepSpeed 加载
+        _, client_state = model.load_checkpoint(save_path)
+        return client_state
+    else:
+        # PyTorch 加载
+        checkpoint = torch.load(save_path)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        return checkpoint
 
 def train_and_evaluate(
     model_name: str,
@@ -270,18 +375,22 @@ def train_and_evaluate(
     val_features_path: str,
     config: dict,
 ):
-    """Enhanced training and evaluation function with proper model saving"""
+    """Enhanced training and evaluation function with distributed training support"""
     
-    # 设置结果保存目录
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_dir = os.path.join("results", f"{model_name}_{timestamp}")
-    os.makedirs(save_dir, exist_ok=True)
+    timestamp = arrow.now().format("YYYYMMDD_HHmmss")
+    project_root = Path(__file__).resolve().parent.parent
+    save_dir = project_root / "results" / f"{model_name}_{timestamp}"
+    
+    # 只在主进程创建目录
+    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+        save_dir.mkdir(parents=True, exist_ok=True)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    console.print(Panel(f"Using device: {device}", style="bold blue"))
+    if torch.distributed.get_rank() == 0:
+        console.print(Panel(f"Using device: {device}", style="bold blue"))
     
-    # Load and prepare data with diagnostics
-    console.print(Panel("Loading and preparing data...", style="bold green"))
+    if torch.distributed.get_rank() == 0:
+        console.print(Panel("Loading and preparing data...", style="bold green"))
     
     def load_features(file_path: str, split: str) -> Tuple[np.ndarray, np.ndarray]:  
         with h5py.File(file_path, 'r') as f:
@@ -292,14 +401,25 @@ def train_and_evaluate(
     train_features, train_labels = load_features(features_path, "train")
     val_features, val_labels = load_features(val_features_path, "val")
     
-    # Create datasets with statistics tracking
     train_dataset = FeatureDataset(train_features, train_labels, normalize=True, is_train=True)
     val_dataset = FeatureDataset(val_features, val_labels, normalize=True, train_stats=train_dataset.train_stats, is_train=False)
+    
+    # 添加分布式采样器
+    train_sampler = torch.utils.data.distributed.DistributedSampler(
+        train_dataset,
+        shuffle=True
+    ) if torch.distributed.is_initialized() else None
+    
+    val_sampler = torch.utils.data.distributed.DistributedSampler(
+        val_dataset,
+        shuffle=False
+    ) if torch.distributed.is_initialized() else None
     
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.get("batch_size", 1024),
-        shuffle=True,
+        sampler=train_sampler,
+        shuffle=(train_sampler is None),
         num_workers=config.get("num_workers", 4),
         pin_memory=True
     )
@@ -307,12 +427,12 @@ def train_and_evaluate(
     val_loader = DataLoader(
         val_dataset,
         batch_size=config.get("batch_size", 1024),
+        sampler=val_sampler,
         shuffle=False,
         num_workers=config.get("num_workers", 4),
         pin_memory=True
     )
     
-    # Initialize model
     input_dim = train_features.shape[1]
     num_classes = len(np.unique(train_labels))
     
@@ -321,7 +441,10 @@ def train_and_evaluate(
     
     if probe_type == "linear":
         model = LinearProbe(input_dim, num_classes)
-        console.print(Panel("Using Linear Probe", style="bold blue"))
+        if config.deepspeed.enabled and config.deepspeed.fp16.enabled:
+            model = model.half()
+        if torch.distributed.get_rank() == 0:
+            console.print(Panel("Using Linear Probe", style="bold blue"))
     elif probe_type == "mlp":
         mlp_config = probe_config.get("mlp", {})
         model = MLPProbe(
@@ -331,21 +454,55 @@ def train_and_evaluate(
             num_layers=mlp_config.get("num_layers", 2),
             dropout=mlp_config.get("dropout", 0.1)
         )
-        console.print(Panel(
-            f"Using MLP Probe with:\n"
-            f"  Hidden Dim: {mlp_config.get('hidden_dim', 2048)}\n"
-            f"  Num Layers: {mlp_config.get('num_layers', 2)}\n"
-            f"  Dropout: {mlp_config.get('dropout', 0.1)}",
-            style="bold blue"
-        ))
+        if config.deepspeed.enabled and config.deepspeed.fp16.enabled:
+            model = model.half()
+        if torch.distributed.get_rank() == 0:
+            console.print(Panel(
+                f"Using MLP Probe with:\n"
+                f"  Hidden Dim: {mlp_config.get('hidden_dim', 2048)}\n"
+                f"  Num Layers: {mlp_config.get('num_layers', 2)}\n"
+                f"  Dropout: {mlp_config.get('dropout', 0.1)}",
+                style="bold blue"
+            ))
     else:
         raise ValueError(f"Unknown probe type: {probe_type}")
     
-    model = model.to(device)
+    use_deepspeed = config.get("deepspeed", {}).get("enabled", False)
+    if use_deepspeed:
+        if torch.distributed.get_rank() == 0:
+            console.print(Panel("Initializing DeepSpeed...", style="bold cyan"))
+        
+        steps_per_epoch = len(train_loader)
+        warmup_steps = int(config.probe.warmup_epochs * steps_per_epoch)
+        total_steps = int(config.probe.epochs * steps_per_epoch)
+        
+        # 更新DeepSpeed配置
+        ds_config = OmegaConf.to_container(config.deepspeed, resolve=True)
+        ds_config['train_micro_batch_size_per_gpu'] = config.probe.batch_size
+        ds_config['scheduler']['params']['warmup_num_steps'] = warmup_steps
+        ds_config['scheduler']['params']['total_num_steps'] = total_steps
+        
+        if torch.distributed.get_rank() == 0:
+            console.print(Panel(
+                f"DeepSpeed Configuration:\n"
+                f"  Batch Size per GPU: {config.probe.batch_size}\n"
+                f"  Warmup Steps: {warmup_steps}\n"
+                f"  Total Steps: {total_steps}",
+                style="bold cyan"
+            ))
+        
+        model_engine, optimizer, _, scheduler = deepspeed.initialize(
+            model=model,
+            config=ds_config
+        )
+        model = model_engine
+    else:
+        model = model.to(device)
     
     # 超参数搜索和记录
     if config.probe.hyperparameter_search.enabled:
-        console.print(Panel("Starting hyperparameter search...", style="bold cyan"))
+        if torch.distributed.get_rank() == 0:
+            console.print(Panel("Starting hyperparameter search...", style="bold cyan"))
         best_lr, best_wd = find_best_hyperparams(
             train_loader,
             val_loader,
@@ -354,7 +511,8 @@ def train_and_evaluate(
             device,
             config.probe.hyperparameter_search.learning_rates,
             config.probe.hyperparameter_search.weight_decays,
-            config.probe.hyperparameter_search.quick_epochs
+            config.probe.hyperparameter_search.quick_epochs,
+            config
         )
     else:
         best_lr = config.probe.learning_rate
@@ -369,14 +527,12 @@ def train_and_evaluate(
         "total_epochs": config.probe.epochs,
     }
     
-    # Model setup with recorded hyperparameters
-    optimizer = optim.AdamW(model.parameters(), lr=best_lr, weight_decay=best_wd)
-    
-    # Learning rate schedule setup
-    steps_per_epoch = len(train_loader)
-    total_steps = config.probe.epochs * steps_per_epoch
-    warmup_steps = config.probe.warmup_epochs * steps_per_epoch
-    scheduler = cosine_lr(optimizer, best_lr, warmup_steps, total_steps)
+    if not use_deepspeed:
+        optimizer = optim.AdamW(model.parameters(), lr=best_lr, weight_decay=best_wd)
+        steps_per_epoch = len(train_loader)
+        total_steps = config.probe.epochs * steps_per_epoch
+        warmup_steps = config.probe.warmup_epochs * steps_per_epoch
+        scheduler = cosine_lr(optimizer, best_lr, warmup_steps, total_steps)
     
     history = {
         'epochs': [],
@@ -389,78 +545,103 @@ def train_and_evaluate(
     best_val_acc = 0
     best_epoch_metrics = None
     best_model = None
-    best_model_state = None
     
     for epoch in range(config.probe.epochs):
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
+        
         train_loss, train_acc = train_epoch(
-            model, train_loader, optimizer, scheduler, device, epoch=epoch,
+            model,
+            train_loader,
+            None if use_deepspeed else optimizer,
+            None if use_deepspeed else scheduler,
+            device,
+            epoch=epoch,
+            use_deepspeed=use_deepspeed
         )
         
-        val_metrics = evaluate_model(model, val_loader, device)
+        # 同步所有进程
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
         
-        # Update history
-        history['epochs'].append(epoch + 1)
-        history['train_loss'].append(train_loss)
-        history['train_acc'].append(train_acc)
-        history['val_acc'].append(val_metrics["Accuracy"])
+        # 只在主进程上进行评估
+        if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+            val_metrics = evaluate_model(
+                model,
+                val_loader,
+                device,
+                use_deepspeed=use_deepspeed
+            )
+            
+            # Update history
+            history['epochs'].append(epoch + 1)
+            history['train_loss'].append(train_loss)
+            history['train_acc'].append(train_acc)
+            history['val_acc'].append(val_metrics["Accuracy"])
+            
+            current_metrics = {
+                "Epoch": epoch + 1,
+                "Train Loss": train_loss,
+                "Train Accuracy": train_acc,
+                **val_metrics
+            }
+            print_metrics_table(current_metrics, epoch + 1)
+            
+            # 保存最佳模型及其对应的指标
+            if val_metrics["Accuracy"] > best_val_acc:
+                best_val_acc = val_metrics["Accuracy"]
+                best_epoch_metrics = current_metrics.copy()
+                best_model = save_best_model(
+                    model=model,
+                    optimizer=optimizer if not use_deepspeed else None,
+                    best_val_acc=best_val_acc,
+                    epoch=epoch,
+                    actual_hyperparams=actual_hyperparams,
+                    train_stats=train_dataset.train_stats,
+                    config=config,
+                    best_epoch_metrics=best_epoch_metrics,
+                    save_dir=save_dir,
+                    use_deepspeed=use_deepspeed
+                )
         
-        current_metrics = {
-            "Epoch": epoch + 1,
-            "Train Loss": train_loss,
-            "Train Accuracy": train_acc,
-            **val_metrics
+        # 同步所有进程
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+    
+    # 只在主进程保存结果
+    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+        if best_model is not None:
+            if use_deepspeed:
+                save_path = save_dir / f"checkpoint-epoch{best_model['epoch']}"
+            else:
+                save_path = save_dir / "best_model.pth"
+                
+            best_model = load_best_model(
+                model=model,
+                optimizer=optimizer if not use_deepspeed else None,
+                save_path=save_path,
+                use_deepspeed=use_deepspeed
+            )
+        
+        # 保存训练历史图表
+        plot_path = save_dir / "training_history.png"
+        plot_training_history(history, str(plot_path))
+        
+        # 保存完整的评估结果
+        results = {
+            "model_name": model_name,
+            "best_epoch": best_model["epoch"],
+            "best_val_accuracy": best_val_acc,
+            "best_metrics": best_epoch_metrics,
+            "final_metrics": current_metrics,
+            "hyperparameters": actual_hyperparams,
+            "config": OmegaConf.to_container(config, resolve=True),
+            "timestamp": timestamp
         }
-        print_metrics_table(current_metrics, epoch + 1)
         
-        # 保存最佳模型及其对应的指标
-        if val_metrics["Accuracy"] > best_val_acc:
-            best_val_acc = val_metrics["Accuracy"]
-            best_epoch_metrics = current_metrics.copy()
-            # 保存模型状态
-            best_model_state = {
-                k: v.clone().detach() if isinstance(v, torch.Tensor) else v 
-                for k, v in model.state_dict().items()
-            }
-            best_model = {
-                "epoch": epoch + 1,
-                "model_state_dict": best_model_state,
-                "optimizer_state_dict": {
-                    k: v.clone().detach() if isinstance(v, torch.Tensor) else v 
-                    for k, v in optimizer.state_dict().items()
-                },
-                "val_accuracy": best_val_acc,
-                "hyperparameters": actual_hyperparams,
-                "train_stats": train_dataset.train_stats,
-                "config": OmegaConf.to_container(config, resolve=True),
-                "metrics": best_epoch_metrics.copy()
-            }
-    
-    # 恢复到最佳模型状态
-    model.load_state_dict(best_model_state)
-    
-    # 保存训练历史图表
-    plot_path = os.path.join(save_dir, "training_history.png")
-    plot_training_history(history, plot_path)
-    
-    # 保存最佳模型
-    model_save_path = os.path.join(save_dir, "best_model.pth")
-    torch.save(best_model, model_save_path)
-    
-    # 保存完整的评估结果，使用最佳模型的指标
-    results = {
-        "model_name": model_name,
-        "best_epoch": best_model["epoch"],
-        "best_val_accuracy": best_val_acc,
-        "best_metrics": best_epoch_metrics,
-        "final_metrics": current_metrics,
-        "hyperparameters": actual_hyperparams,
-        "config": OmegaConf.to_container(config, resolve=True),
-        "timestamp": timestamp
-    }
-    
-    results_path = os.path.join(save_dir, "results.json")
-    with open(results_path, "w") as f:
-        json.dump(results, f, indent=2)
-    
-    console.print(Panel(f"[green]Training completed! Results saved to: {save_dir}"))
-    return results
+        results_path = save_dir / "results.json"
+        with open(results_path, "wb") as f:  
+            f.write(orjson.dumps(results, option=orjson.OPT_INDENT_2))
+        
+        console.print(Panel(f"[green]Training completed! Results saved to: {save_dir}"))
+        return results

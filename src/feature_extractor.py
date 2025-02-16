@@ -11,6 +11,7 @@ from rich.panel import Panel
 from rich.table import Table
 from typing import Optional, Tuple, Dict
 from dataclasses import dataclass
+from utils.progress_utils import create_progress_bar
 
 console = Console()
 
@@ -39,16 +40,6 @@ class ImageFolderWithPaths(datasets.ImageFolder):
             target = self.target_transform(target)
 
         return sample, target, path
-
-def create_progress_bar() -> Progress:
-    """Create a unified progress bar style"""
-    return Progress(
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(complete_style="green", finished_style="green"),
-        TaskProgressColumn(),
-        TimeRemainingColumn(),
-        console=console
-    )
 
 class DatasetLoader:
     """Dataset loader class"""

@@ -1,0 +1,56 @@
+# conf/deepspeed/zero1.yaml
+enabled: true
+stage: 1
+offload_optimizer: false
+offload_param: false
+contiguous_gradients: true
+overlap_comm: true
+allgather_partitions: true
+reduce_scatter: true
+allgather_bucket_size: 5e8
+reduce_bucket_size: 5e8
+
+train_micro_batch_size_per_gpu: ${probe.batch_size}
+
+zero_optimization:
+  stage: 1
+  allgather_partitions: true
+  allgather_bucket_size: 5e8
+  overlap_comm: true
+  reduce_scatter: true
+  reduce_bucket_size: 5e8
+  contiguous_gradients: true
+
+gradient_accumulation_steps: 1
+gradient_clipping: 1.0
+prescale_gradients: false
+wall_clock_breakdown: false
+
+fp16:
+  enabled: false
+  loss_scale: 0
+  initial_scale_power: 16
+  loss_scale_window: 1000
+  hysteresis: 2
+  min_loss_scale: 1
+
+optimizer:
+  type: AdamW
+  params:
+    lr: ${probe.learning_rate}
+    weight_decay: ${probe.weight_decay}
+    betas: [0.9, 0.999]
+    eps: 1e-8
+
+scheduler:
+  type: WarmupDecayLR
+  params:
+    warmup_min_lr: 0
+    warmup_max_lr: ${probe.learning_rate}
+    warmup_num_steps: null
+    total_num_steps: null
+    
+zero_allow_untested_optimizer: true
+
+communication_data_type: "fp32"
+round_robin_gradients: false
