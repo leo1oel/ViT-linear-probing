@@ -18,30 +18,12 @@ from omegaconf import OmegaConf
 import matplotlib.pyplot as plt
 import seaborn as sns
 import json
+from utils.progress_utils import create_progress_bar, print_metrics_table
+from utils.plot_utils import plot_training_history
+import arrow
+from pathlib import Path
 
 console = Console()
-
-def create_progress_bar() -> Progress:
-    return Progress(
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(complete_style="green", finished_style="green"),
-        TaskProgressColumn(),
-        TimeRemainingColumn(),
-        console=console
-    )
-
-def print_metrics_table(metrics: Dict, epoch: int):
-    table = Table(title=f"Epoch {epoch} Results", show_header=True, header_style="bold magenta")
-    table.add_column("Metric", style="cyan")
-    table.add_column("Value", justify="right", style="green")
-    
-    for key, value in metrics.items():
-        if isinstance(value, float):
-            table.add_row(key, f"{value:.2f}")
-        else:
-            table.add_row(key, str(value))
-    
-    console.print(table)
 
 def assign_learning_rate(param_group: dict, new_lr: float):
     param_group["lr"] = new_lr
@@ -80,7 +62,6 @@ def find_best_hyperparams(
     best_lr = learning_rates[0]
     best_wd = weight_decays[0]
     
-    # 创建结果表格
     results_table = Table(
         title="Hyperparameter Search Results",
         show_header=True,
@@ -121,7 +102,6 @@ def find_best_hyperparams(
                 
                 progress.update(search_task, advance=1)
     
-    # 打印结果表格
     console.print(results_table)
     console.print(f"\n[bold green]Best configuration: LR={best_lr:.1e}, WD={best_wd:.1e}, Val Acc={best_acc:.2f}%[/bold green]")
     
@@ -221,49 +201,6 @@ def evaluate_model(
     
     return metrics
 
-def plot_training_history(history: Dict, save_path: str):
-    """Create a beautiful training history plot with loss and accuracy metrics.
-    
-    Args:
-        history: Dictionary containing training history
-        save_path: Path to save the plot
-    """
-    # Set the style
-    sns.set_theme(style="darkgrid")
-    
-    # Create figure and axis objects with a single subplot
-    fig, ax1 = plt.subplots(figsize=(10, 6))
-    
-    # Plot loss on primary y-axis
-    color = sns.color_palette()[0]
-    ax1.set_xlabel('Epoch', fontsize=12)
-    ax1.set_ylabel('Loss', color=color, fontsize=12)
-    ax1.plot(history['epochs'], history['train_loss'], color=color, label='Train Loss', marker='o')
-    ax1.tick_params(axis='y', labelcolor=color)
-    
-    # Create second y-axis that shares x-axis
-    ax2 = ax1.twinx()
-    color = sns.color_palette()[1]
-    ax2.set_ylabel('Accuracy (%)', color=color, fontsize=12)
-    ax2.plot(history['epochs'], [acc * 100 for acc in history['train_acc']], 
-            color=color, label='Train Accuracy', linestyle='--', marker='s')
-    ax2.plot(history['epochs'], [acc * 100 for acc in history['val_acc']], 
-            color=sns.color_palette()[2], label='Val Accuracy', linestyle='--', marker='^')
-    ax2.tick_params(axis='y', labelcolor=color)
-    
-    # Add title
-    plt.title('Training History', pad=20, fontsize=14, fontweight='bold')
-    
-    # Add legend
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax2.legend(lines1 + lines2, labels1 + labels2, loc='center right', bbox_to_anchor=(1.15, 0.5))
-    
-    # Adjust layout and save
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.close()
-
 def train_and_evaluate(
     model_name: str,
     features_path: str,
@@ -273,9 +210,11 @@ def train_and_evaluate(
     """Enhanced training and evaluation function with proper model saving"""
     
     # 设置结果保存目录
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_dir = os.path.join("results", f"{model_name}_{timestamp}")
-    os.makedirs(save_dir, exist_ok=True)
+    timestamp = arrow.now().format("YYYYMMDD_HHmmss")
+    project_root = Path(__file__).resolve().parent.parent
+    save_dir = project_root / "results" / f"{model_name}_{timestamp}"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    console.print(Panel(f"Results will be saved to: {save_dir}", style="bold blue"))
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     console.print(Panel(f"Using device: {device}", style="bold blue"))
@@ -439,11 +378,11 @@ def train_and_evaluate(
     model.load_state_dict(best_model_state)
     
     # 保存训练历史图表
-    plot_path = os.path.join(save_dir, "training_history.png")
-    plot_training_history(history, plot_path)
+    plot_path = save_dir / "training_history.png"
+    plot_training_history(history, str(plot_path))
     
     # 保存最佳模型
-    model_save_path = os.path.join(save_dir, "best_model.pth")
+    model_save_path = save_dir / "best_model.pth"
     torch.save(best_model, model_save_path)
     
     # 保存完整的评估结果，使用最佳模型的指标
@@ -458,7 +397,7 @@ def train_and_evaluate(
         "timestamp": timestamp
     }
     
-    results_path = os.path.join(save_dir, "results.json")
+    results_path = save_dir / "results.json"
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
     

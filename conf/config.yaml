@@ -29,23 +29,23 @@ probe:
   #   dropout: 0.1      # Dropout比率
   # 基础训练参数
   batch_size: 2048
-  epochs: 50
+  epochs: 200
   save_dir: ${hydra:runtime.cwd}/results/${dataset.name}
   warmup_epochs: 10
   learning_rate: 1e-3
   weight_decay: 0
   
   # 超参数搜索配置
-  # hyperparameter_search:
-  #   enabled: true
-  #   quick_epochs: 20  # 快速训练的轮数
-  #   learning_rates: [1e-6, 1e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2]
-  #   weight_decays: [0, 1e-6, 1e-5, 1e-4, 1e-3]
   hyperparameter_search:
     enabled: true
-    quick_epochs: 5  # 快速训练的轮数
-    learning_rates: [1e-6, 1e-5, 1e-4, 1e-3]
-    weight_decays: [0, 1e-6, 1e-3]
+    quick_epochs: 50  # 快速训练的轮数
+    learning_rates: [1e-6, 1e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2]
+    weight_decays: [0, 1e-6, 1e-5, 1e-4, 1e-3]
+  # hyperparameter_search:
+  #   enabled: true
+  #   quick_epochs: 5  # 快速训练的轮数
+  #   learning_rates: [1e-6, 1e-5, 1e-4, 1e-3]
+  #   weight_decays: [0, 1e-6, 1e-3]
 
 hydra:
   run:

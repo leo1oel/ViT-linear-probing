@@ -11,15 +11,19 @@ from rich.panel import Panel
 from rich.table import Table
 from typing import Optional, Tuple, Dict
 from dataclasses import dataclass
+from utils.progress_utils import create_progress_bar
+from pathlib import Path
+import torch.backends.cudnn as cudnn
 
 console = Console()
+cudnn.benchmark = True
 
 @dataclass
 class DatasetConfig:
     """Dataset configuration"""
     dataset_name: str
     data_path: str
-    batch_size: int = 256
+    batch_size: int = 512
     num_workers: int = 8
     image_size: int = 224
     max_samples: Optional[int] = None  # Maximum samples per class, None means use all samples
@@ -40,16 +44,6 @@ class ImageFolderWithPaths(datasets.ImageFolder):
 
         return sample, target, path
 
-def create_progress_bar() -> Progress:
-    """Create a unified progress bar style"""
-    return Progress(
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(complete_style="green", finished_style="green"),
-        TaskProgressColumn(),
-        TimeRemainingColumn(),
-        console=console
-    )
-
 class DatasetLoader:
     """Dataset loader class"""
     def __init__(self, config: DatasetConfig):
@@ -61,6 +55,7 @@ class DatasetLoader:
             transforms.Normalize(mean=[0.485, 0.456, 0.406], 
                                std=[0.229, 0.224, 0.225])
         ])
+        self.prefetch_factor = 2
 
     def load_dataset(self, split: str) -> Tuple[DataLoader, Dict[int, str]]:
         """Load dataset and return dataloader with class mapping
@@ -106,7 +101,8 @@ class DatasetLoader:
             batch_size=self.config.batch_size,
             shuffle=False,
             num_workers=self.config.num_workers,
-            pin_memory=True
+            pin_memory=True,
+            prefetch_factor=self.prefetch_factor
         )
 
         if self.config.dataset_name == 'datacomp12m' or self.config.dataset_name == 'datacomp1.2m':
@@ -124,7 +120,7 @@ class FeatureExtractor:
     def __init__(self, model: nn.Module, device: str = "cuda"):
         self.model = model.to(device)
         self.model.eval()
-        self.device = device
+        self.device = device       
         console.print(Panel(f"Feature extractor initialized on {device}", 
                           style="bold blue"))
     
@@ -153,14 +149,14 @@ class FeatureExtractor:
         class_to_idx: Dict[str, int]
     ) -> None:
         """Extract features and save to file
-        
+
         Args:
             data_loader: DataLoader containing the dataset
             output_path: Path to save the extracted features
             class_to_idx: Mapping from class names to indices
         """
         # Ensure output directory exists
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
         all_features = []
         all_labels = []
@@ -174,10 +170,10 @@ class FeatureExtractor:
                 total=len(data_loader)
             )
 
-            with torch.no_grad():
+            with torch.no_grad(), torch.amp.autocast('cuda'):
                 for images, labels, paths in data_loader:
-                    images = images.to(self.device)
-                    
+                    images = images.to(self.device, non_blocking=True)
+
                     try:
                         features = self._get_features(images)
                         all_features.append(features.cpu().numpy())
@@ -186,21 +182,27 @@ class FeatureExtractor:
                     except Exception as e:
                         console.print(f"[red]Error processing batch: {str(e)}[/red]")
                         raise e
-                    
+
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
                     progress.update(extract_task, advance=1)
 
         # Concatenate all features
         features = np.concatenate(all_features)
         labels = np.concatenate(all_labels)
 
-        # Save features
+        self._save_features(output_path, features, labels, all_paths, class_to_idx)
+
+    def _save_features(self, output_path, features, labels, paths, class_to_idx):
         console.print(Panel("Saving features to file...", style="bold green"))
         with h5py.File(output_path, 'w') as f:
-            f.create_dataset('last_hidden_cls', data=features)
-            f.create_dataset('targets', data=labels)
-            # Save image paths and class mapping
+            f.create_dataset('features', data=features, compression='gzip', compression_opts=4)
+            f.create_dataset('labels', data=labels, compression='gzip', compression_opts=4)
             dt = h5py.special_dtype(vlen=str)
-            f.create_dataset('paths', data=np.array(all_paths, dtype=object), dtype=dt)
+            f.create_dataset('paths', data=np.array(paths, dtype=object), dtype=dt)
+            
+            # 存储类别映射
             for class_name, idx in class_to_idx.items():
                 f.attrs[f'class_{idx}'] = class_name
 

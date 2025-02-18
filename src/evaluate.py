@@ -5,9 +5,10 @@ from extract_features import extract_features
 from linear_probe import linear_probe
 import os
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-config_path = os.path.join(os.path.dirname(current_dir), "conf")
-@hydra.main(version_base=None, config_path=config_path, config_name="config")
+current_dir = Path(__file__).resolve().parent
+config_path = current_dir.parent / "conf"
+
+@hydra.main(version_base=None, config_path=str(config_path), config_name="config")
 def main(cfg: DictConfig):
 
     features_path = extract_features(cfg)

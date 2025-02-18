@@ -3,6 +3,7 @@ import hydra
 from omegaconf import DictConfig
 from typing import Dict
 from trainer import train_and_evaluate
+from pathlib import Path
 
 def linear_probe(cfg: DictConfig, feature_paths: Dict[str, str]) -> Dict:
     """Main function for linear probing training
@@ -26,23 +27,18 @@ def linear_probe(cfg: DictConfig, feature_paths: Dict[str, str]) -> Dict:
     
     return metrics
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-config_path = os.path.join(os.path.dirname(current_dir), "conf")
-@hydra.main(version_base=None, config_path=config_path, config_name="config")
+current_dir = Path(__file__).resolve().parent
+config_path = current_dir.parent / "conf"
+
+@hydra.main(version_base=None, config_path=str(config_path), config_name="config")
 def main(cfg: DictConfig):
     """Main function for linear probe training"""
     model_name = cfg.model.name
     
-    # Build feature paths
+    cache_dir = Path(cfg.data.cache_dir)
     feature_paths = {
-        "train_features": os.path.join(
-            cfg.data.cache_dir,
-            f"{model_name.lower()}_train_features.h5"
-        ),
-        "val_features": os.path.join(
-            cfg.data.cache_dir,
-            f"{model_name.lower()}_val_features.h5"
-        )
+        "train_features": cache_dir / f"{cfg.model.name.lower()}_train_features.h5",
+        "val_features": cache_dir / f"{cfg.model.name.lower()}_val_features.h5"
     }
     
     # Run linear probing
