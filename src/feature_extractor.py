@@ -1,4 +1,3 @@
-import os
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
@@ -6,7 +5,6 @@ from torchvision import transforms, datasets
 import h5py
 import numpy as np
 from rich.console import Console
-from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 from rich.panel import Panel
 from rich.table import Table
 from typing import Optional, Tuple, Dict
@@ -18,18 +16,24 @@ import torch.backends.cudnn as cudnn
 console = Console()
 cudnn.benchmark = True
 
+
 @dataclass
 class DatasetConfig:
     """Dataset configuration"""
+
     dataset_name: str
     data_path: str
     batch_size: int = 512
     num_workers: int = 8
     image_size: int = 224
-    max_samples: Optional[int] = None  # Maximum samples per class, None means use all samples
+    max_samples: Optional[int] = (
+        None  # Maximum samples per class, None means use all samples
+    )
+
 
 class ImageFolderWithPaths(datasets.ImageFolder):
     """Extended ImageFolder that returns image paths"""
+
     def __init__(self, root, transform):
         super().__init__(root, transform)
         self.imgs = self.samples
@@ -44,33 +48,40 @@ class ImageFolderWithPaths(datasets.ImageFolder):
 
         return sample, target, path
 
+
 class DatasetLoader:
     """Dataset loader class"""
+
     def __init__(self, config: DatasetConfig):
         self.config = config
-        self.transform = transforms.Compose([
-            transforms.Resize(config.image_size),
-            transforms.CenterCrop(config.image_size),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                               std=[0.229, 0.224, 0.225])
-        ])
+        self.transform = transforms.Compose(
+            [
+                transforms.Resize(config.image_size),
+                transforms.CenterCrop(config.image_size),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                ),
+            ]
+        )
         self.prefetch_factor = 2
 
     def load_dataset(self, split: str) -> Tuple[DataLoader, Dict[int, str]]:
         """Load dataset and return dataloader with class mapping
-        
+
         Args:
             split: Dataset split ('train' or 'val')
-            
+
         Returns:
             Tuple containing:
                 - DataLoader: The dataset loader
                 - Dict[int, str]: Mapping from class indices to class names
         """
         # Create dataset
-        dataset = get_dataset(self.config.dataset_name, self.config.data_path, self.transform)
-        if split == 'train':
+        dataset = get_dataset(
+            self.config.dataset_name, self.config.data_path, self.transform
+        )
+        if split == "train":
             full_dataset = dataset.train_data
         else:
             full_dataset = dataset.val_data
@@ -84,14 +95,16 @@ class DatasetLoader:
                 if label not in indices_by_class:
                     indices_by_class[label] = []
                 indices_by_class[label].append(idx)
-            
+
             # Sample from each class
             sampled_indices = []
             for indices in indices_by_class.values():
                 if len(indices) > self.config.max_samples:
-                    indices = np.random.choice(indices, self.config.max_samples, replace=False)
+                    indices = np.random.choice(
+                        indices, self.config.max_samples, replace=False
+                    )
                 sampled_indices.extend(indices)
-            
+
             # Create subset
             full_dataset = Subset(full_dataset, sampled_indices)
 
@@ -102,51 +115,54 @@ class DatasetLoader:
             shuffle=False,
             num_workers=self.config.num_workers,
             pin_memory=True,
-            prefetch_factor=self.prefetch_factor
+            prefetch_factor=self.prefetch_factor,
         )
 
-        if self.config.dataset_name == 'datacomp12m' or self.config.dataset_name == 'datacomp1.2m':
-            return data_loader, {cls: idx for idx, cls in enumerate(['unknown'])}
+        if (
+            self.config.dataset_name == "datacomp12m"
+            or self.config.dataset_name == "datacomp1.2m"
+        ):
+            return data_loader, {cls: idx for idx, cls in enumerate(["unknown"])}
         # Get class mapping
-        class_to_idx = getattr(full_dataset, 'class_to_idx', None)
-        if class_to_idx is None and hasattr(full_dataset, 'dataset'):
+        class_to_idx = getattr(full_dataset, "class_to_idx", None)
+        if class_to_idx is None and hasattr(full_dataset, "dataset"):
             # Handle Subset case
             class_to_idx = full_dataset.dataset.class_to_idx
 
         return data_loader, class_to_idx
 
+
 class FeatureExtractor:
     """Feature extractor class"""
+
     def __init__(self, model: nn.Module, device: str = "cuda"):
         self.model = model.to(device)
         self.model.eval()
-        self.device = device       
-        console.print(Panel(f"Feature extractor initialized on {device}", 
-                          style="bold blue"))
-    
+        self.device = device
+        console.print(
+            Panel(f"Feature extractor initialized on {device}", style="bold blue")
+        )
+
     def _get_features(self, images: torch.Tensor) -> torch.Tensor:
         """Extract features based on model type
-        
+
         Args:
             images: Input tensor of images
-            
+
         Returns:
             torch.Tensor: Extracted features
         """
         outputs = self.model(images, output_hidden_states=True)
-        if hasattr(outputs, 'last_hidden_state'):
+        if hasattr(outputs, "last_hidden_state"):
             features = outputs.last_hidden_state[:, 0]  # Take CLS token
         else:
             # If no last_hidden_state, use the last layer hidden state
             features = outputs.hidden_states[-1][:, 0]
-        
+
         return features
 
     def extract_features(
-        self,
-        data_loader: DataLoader,
-        output_path: str,
-        class_to_idx: Dict[str, int]
+        self, data_loader: DataLoader, output_path: str, class_to_idx: Dict[str, int]
     ) -> None:
         """Extract features and save to file
 
@@ -166,11 +182,10 @@ class FeatureExtractor:
         progress = create_progress_bar()
         with progress:
             extract_task = progress.add_task(
-                "[cyan]Extracting features...", 
-                total=len(data_loader)
+                "[cyan]Extracting features...", total=len(data_loader)
             )
 
-            with torch.no_grad(), torch.amp.autocast('cuda'):
+            with torch.no_grad(), torch.amp.autocast("cuda"):
                 for images, labels, paths in data_loader:
                     images = images.to(self.device, non_blocking=True)
 
@@ -196,15 +211,19 @@ class FeatureExtractor:
 
     def _save_features(self, output_path, features, labels, paths, class_to_idx):
         console.print(Panel("Saving features to file...", style="bold green"))
-        with h5py.File(output_path, 'w') as f:
-            f.create_dataset('features', data=features, compression='gzip', compression_opts=4)
-            f.create_dataset('labels', data=labels, compression='gzip', compression_opts=4)
+        with h5py.File(output_path, "w") as f:
+            f.create_dataset(
+                "features", data=features, compression="gzip", compression_opts=4
+            )
+            f.create_dataset(
+                "labels", data=labels, compression="gzip", compression_opts=4
+            )
             dt = h5py.special_dtype(vlen=str)
-            f.create_dataset('paths', data=np.array(paths, dtype=object), dtype=dt)
-            
+            f.create_dataset("paths", data=np.array(paths, dtype=object), dtype=dt)
+
             # 存储类别映射
             for class_name, idx in class_to_idx.items():
-                f.attrs[f'class_{idx}'] = class_name
+                f.attrs[f"class_{idx}"] = class_name
 
         # Print feature statistics
         stats_table = Table(title="Feature Statistics")
@@ -216,16 +235,18 @@ class FeatureExtractor:
         stats_table.add_row("Feature Std", f"{features.std():.4f}")
         console.print(stats_table)
 
+
 def get_dataset(dataset_name, data_path, transform):
     """Get dataset instance
-    
+
     Args:
         dataset_name: Name of the dataset
         data_path: Path to dataset
         transform: Transforms to apply to images
-        
+
     Returns:
         Dataset instance
     """
     from data_utils import get_dataset as get_dataset_instance
+
     return get_dataset_instance(dataset_name, data_path, transform)

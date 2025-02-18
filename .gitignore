@@ -14,3 +14,6 @@ dataset/
 
 # Virtual environments
 .venv
+
+# Ruff cache
+.ruff_cache/
