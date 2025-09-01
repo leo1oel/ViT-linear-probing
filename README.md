@@ -1,97 +1,85 @@
 # ViT Linear Probing
 
-这个项目提供了一个简单的框架来评估视觉模型的特征表示能力。主要功能包括特征提取和线性探测评估。
+This project provides a simple framework for evaluating the feature representation capabilities of vision models. The main functionalities include feature extraction and linear probing evaluation.
 
-## 安装
+## Installation
 
-1. 克隆仓库：
-
+1. Clone the repository:
 ```bash
 git clone git@github.com:leo1oel/ViT-linear-probing.git
 cd ViT-linear-probing
 ```
 
-2. 安装 uv (如果还没有安装):
-
+2. Install uv (if not already installed):
 ```bash
 pip install uv
 ```
 
-3. 使用 uv 创建虚拟环境并安装依赖：
-
+3. Create a virtual environment and install dependencies using uv:
 ```bash
 uv venv
 source .venv/bin/activate  # Linux/Mac
-# 或
+# or
 .venv\Scripts\activate  # Windows
-
 uv pip install -r requirements.txt
 ```
 
-## 使用方法
+## Usage
 
-### 配置
+### Configuration
 
-所有配置都在 `conf/` 目录下：
+All configurations are located in the `conf/` directory:
+- `conf/config.yaml`: Main configuration file
+- `conf/model/`: Contains specific configurations for different models
 
-- `conf/config.yaml`: 主配置文件
-- `conf/model/`: 包含不同模型的具体配置
+Key configuration items include:
+- Data path configuration
+- Feature extraction configuration
+- Linear probing configuration
+- Wandb configuration (optional)
 
-主要配置项包括：
+### Running Evaluation
 
-- 数据路径配置
-- 特征提取配置
-- 线性探测配置
-- Wandb 配置（可选）
-
-### 运行评估
-
-使用以下命令运行完整的评估流程：
-
+Use the following command to run the complete evaluation pipeline:
 ```bash
-python evaluate.py model=dino  # 使用DINO模型配置
+python evaluate.py model=dino  # Use DINO model configuration
 ```
 
-如果要启用wandb记录：
-
+To enable wandb logging:
 ```bash
 python evaluate.py model=dino use_wandb=true
 ```
 
-### 单独运行
+### Running Separately
 
-也可以分别运行特征提取和线性探测：
+You can also run feature extraction and linear probing separately:
 
-1. 特征提取：
-
+1. Feature extraction:
 ```bash
 python extract_features.py model=dino
 ```
 
-2. 线性探测：
-
+2. Linear probing:
 ```bash
 python linear_probe.py model=dino
 ```
 
-## 项目结构
+## Project Structure
 
 ```
 .
-├── conf/                   # 配置文件目录
-│   ├── config.yaml        # 主配置文件
-│   └── model/            # 模型特定配置
-├── evaluate.py            # 主评估脚本
-├── extract_features.py    # 特征提取脚本
-├── linear_probe.py        # 线性探测脚本
-├── models.py             # 模型定义
-└── feature_extractor.py  # 特征提取器实现
+├── conf/                   # Configuration files directory
+│   ├── config.yaml        # Main configuration file
+│   └── model/            # Model-specific configurations
+├── evaluate.py            # Main evaluation script
+├── extract_features.py    # Feature extraction script
+├── linear_probe.py        # Linear probing script
+├── models.py             # Model definitions
+└── feature_extractor.py  # Feature extractor implementation
 ```
 
-## 扩展
+## Extension
 
-要添加新的模型支持：
-
-1. 在 `conf/model/` 下添加新的模型配置
-2. 在 `models.py` 中实现相应的模型加载逻辑，如果是 huggingface 模型并且用最后一层 cls token 作为特征表示，可以不用修改
-
+To add support for new models:
+1. Add a new model configuration under `conf/model/`
+2. Implement the corresponding model loading logic in `models.py`. If it's a Hugging Face model that uses the last layer CLS token as feature representation, no modification is needed
